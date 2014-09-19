@@ -48,13 +48,26 @@
 #define NF10_IOCTL_CMD_READ_STAT	(SIOCDEVPRIVATE+0)
 #define NF10_IOCTL_CMD_WRITE_REG	(SIOCDEVPRIVATE+1)
 #define NF10_IOCTL_CMD_READ_REG		(SIOCDEVPRIVATE+2)
-#define NF10_IOCTL_CMD_INIT		(SIOCDEVPRIVATE+3)
-#define NF10_IOCTL_CMD_PREPARE_RX	(SIOCDEVPRIVATE+4)
-#define NF10_IOCTL_CMD_WAIT_INTR	(SIOCDEVPRIVATE+5)
 #ifdef CONFIG_OSNT
 /* for compat w/ OSNT python apps */
 #define NF10_IOCTL_CMD_WRITE_REG_PY	(SIOCDEVPRIVATE+9)
 #endif
+
+/*
+ * Packet processing
+ */
+#define NF10_IOCTL_CMD_INIT		(SIOCDEVPRIVATE+3)
+/* Rx */
+#define NF10_IOCTL_CMD_PREPARE_RX	(SIOCDEVPRIVATE+4)
+#define NF10_IOCTL_CMD_WAIT_INTR	(SIOCDEVPRIVATE+5)
+/* Tx */
+#define NF10_IOCTL_CMD_PKT_GEN		(SIOCDEVPRIVATE+20)
+
+struct pkt_gen_info {
+	unsigned int pkt_len;
+	unsigned long pkt_count;
+	int batch;
+};
 
 #ifdef __KERNEL__
 #include "nf10.h"

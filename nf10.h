@@ -109,6 +109,8 @@ struct nf10_user_ops {
 	unsigned long	(*get_pfn)(struct nf10_adapter *adapter, unsigned long arg);
 	void		(*prepare_rx_buffer)(struct nf10_adapter *adapter,
 					     unsigned long arg);
+	unsigned long	(*pkt_gen)(struct nf10_adapter *adapter, unsigned int pkt_len,
+				   unsigned long pkt_count, int batch);
 };
 
 static inline void nf10_writel(struct nf10_adapter *adapter, int off, u32 val)

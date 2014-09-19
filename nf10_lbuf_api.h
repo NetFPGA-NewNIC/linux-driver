@@ -65,7 +65,8 @@
 #define LBUF_FIRST_DWORD_IDX()		NR_RESERVED_DWORDS
 #define LBUF_INVALIDATE(buf_addr)	do { ((unsigned int *)buf_addr)[0] = 0; } while(0)
 
-/* in each packet, 1st dword	  = packet metadata (upper 16bit = port num encoded)
+/* Rx
+ * in each packet, 1st dword	  = packet metadata (upper 16bit = port num encoded)
  *		   2nd dword	  = packet length in bytes
  *		   3rd-4th dword  = packet length in bytes
  *		   5th dword~	  = packet payload
@@ -82,6 +83,17 @@
 #endif
 #define LBUF_PKT_ADDR(buf_addr, dword_idx)	(void *)&((unsigned int *)buf_addr)[dword_idx+LBUF_PKT_START_OFFSET]
 #define LBUF_NEXT_DWORD_IDX(dword_idx, pkt_len)     (dword_idx + LBUF_PKT_START_OFFSET + (((pkt_len + 7) & ~7) >> 2))
+
+/* Tx */
+#define LBUF_TX_METADATA_SIZE	8
+#define LBUF_SET_TX_METADATA(buf_addr, port_num, pkt_len)	\
+({								\
+	((u32 *)buf_addr)[0] = LBUF_ENCODE_PORT_NUM(port_num);	\
+	((u32 *)buf_addr)[1] = pkt_len;				\
+	(void *)buf_addr + LBUF_TX_METADATA_SIZE;		\
+})
+#define LBUF_HAS_TX_ROOM(buf_size, buf_offset, pkt_size)	\
+	(buf_offset + pkt_size + LBUF_TX_METADATA_SIZE <= buf_size)
 
 /* check functions */
 #define LBUF_IS_VALID(nr_dwords)		(nr_dwords > NR_RESERVED_DWORDS && nr_dwords <= (LBUF_SIZE >> 2))

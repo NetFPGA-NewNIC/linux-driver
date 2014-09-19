@@ -190,7 +190,7 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	{
 		u64 addr, val;
 		u32 ret;
-		if (copy_from_user(&addr, (u64 *)arg, 8)) {
+		if (copy_from_user(&addr, (void __user *)arg, 8)) {
 			pr_err("Error: failed to copy AXI read addr\n");
 			return -EFAULT;
 		}
@@ -200,7 +200,7 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		if (ret)
 			return ret;	/* error */
 		val |= (addr << 32);	/* for compatability with older rdaxi */
-		if (copy_to_user((u64 *)arg, &val, 8)) {
+		if (copy_to_user((void __user *)arg, &val, 8)) {
 			pr_err("Error: failed to copy AXI read val\n");
 			return -EFAULT;
 		}
@@ -231,6 +231,24 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			return -EFAULT;
 		if (signal_pending(current))
 			pr_debug("signal wakes up a user process\n");
+		break;
+	}
+	case NF10_IOCTL_CMD_PKT_GEN:
+	{
+		struct pkt_gen_info pgi;
+
+		if (copy_from_user(&pgi, (void __user *)arg, sizeof(pgi))) {
+			pr_err("Error: failed to copy pkt_gen_info request\n");
+			return -EFAULT;
+		}
+
+		pgi.pkt_count = adapter->user_ops->pkt_gen(adapter,
+				pgi.pkt_len, pgi.pkt_count, pgi.batch);
+
+		if (copy_to_user((void __user *)arg, &pgi, sizeof(pgi))) {
+			pr_err("Error: failed to copy pkt_gen_info response\n");
+			return -EFAULT;
+		}
 		break;
 	}
 	default:
