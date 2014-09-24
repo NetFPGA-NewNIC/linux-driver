@@ -119,14 +119,17 @@ static int write_axi(struct nf10_adapter *adapter, u64 addr_val)
 {
 	volatile u64 *completion = axi_write_completion(adapter);
 	u32 ret;
+	unsigned long loop = 0;
 
 	/* init -> write addr & val -> poll stat -> return stat */
 	*completion = 0;
+	wmb();
 	writeq(addr_val, adapter->bar0 + AXI_WRITE_ADDR);
-	while ((ret = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT);
+	while ((ret = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT)
+		loop++;
 	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "%s: addr=%llx val=%llx ret=%d\n",
-		  __func__, addr_val >> 32, addr_val & 0xffffffff, ret);
+		  "%s: addr=%llx val=%llx ret=%d (loop=%lu)\n",
+		  __func__, addr_val >> 32, addr_val & 0xffffffff, ret, loop);
 
 	return ret;
 }
@@ -135,15 +138,18 @@ static int read_axi(struct nf10_adapter *adapter, u64 addr, u64 *val)
 {
 	volatile u64 *completion = axi_read_completion(adapter);
 	u32 ret;
+	unsigned long loop = 0;
 
 	/* init -> write addr -> poll stat -> return val & stat */
 	*completion = 0;
+	wmb();
 	writeq(addr, adapter->bar0 + AXI_READ_ADDR);
-	while ((ret = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT);
+	while ((ret = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT)
+		loop++;
 	*val = axi_completion_data(*completion);
 	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "%s: addr=%llx val=%llx ret=%d\n",
-		  __func__, addr, *val, ret);
+		  "%s: addr=%llx val=%llx ret=%d (loop=%lu)\n",
+		  __func__, addr, *val, ret, loop);
 
 	return ret;
 }
