@@ -115,6 +115,7 @@ static int nf10_mmap(struct file *f, struct vm_area_struct *vma)
 	return err;
 }
 
+#define AXI_LOOP_THRESHOLD	100000000
 static int write_axi(struct nf10_adapter *adapter, u64 addr_val)
 {
 	volatile u64 *completion = axi_write_completion(adapter);
@@ -125,8 +126,12 @@ static int write_axi(struct nf10_adapter *adapter, u64 addr_val)
 	*completion = 0;
 	wmb();
 	writeq(addr_val, adapter->bar0 + AXI_WRITE_ADDR);
-	while ((ret = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT)
-		loop++;
+	while ((ret = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT) {
+		if (++loop >= AXI_LOOP_THRESHOLD) {
+			ret = AXI_COMPLETION_NACK;
+			break;
+		}
+	}
 	netif_dbg(adapter, drv, default_netdev(adapter),
 		  "%s: addr=%llx val=%llx ret=%d (loop=%lu)\n",
 		  __func__, addr_val >> 32, addr_val & 0xffffffff, ret, loop);
@@ -144,8 +149,12 @@ static int read_axi(struct nf10_adapter *adapter, u64 addr, u64 *val)
 	*completion = 0;
 	wmb();
 	writeq(addr, adapter->bar0 + AXI_READ_ADDR);
-	while ((ret = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT)
-		loop++;
+	while ((ret = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT) {
+		if (++loop >= AXI_LOOP_THRESHOLD) {
+			ret = AXI_COMPLETION_NACK;
+			break;
+		}
+	}
 	*val = axi_completion_data(*completion);
 	netif_dbg(adapter, drv, default_netdev(adapter),
 		  "%s: addr=%llx val=%llx ret=%d (loop=%lu)\n",
