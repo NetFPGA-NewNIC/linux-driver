@@ -692,7 +692,7 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 #ifdef CONFIG_USER_ONLY
 		netif_dbg(adapter, drv, default_netdev(adapter),
 			  "No user task awaiting in user-only mode\n");
-		nf10_lbuf_prepare_rx(adapter, (unsigned long)rx_prod());
+		nf10_lbuf_prepare_rx(adapter, adapter->user_private);
 		return;
 #endif
 
