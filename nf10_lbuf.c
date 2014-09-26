@@ -367,8 +367,7 @@ static int add_to_pending_gc_list(struct desc *desc)
 
 	*pdesc = *desc;	/* copy */
 
-	/* irq must be disabled since tx irq handling can call this function */
-	__lbuf_queue_tail(&pending_gc_head, pdesc);
+	lbuf_queue_tail(&pending_gc_head, pdesc);
 
 	return 0;
 }
@@ -399,6 +398,7 @@ static bool clean_tx_pending_gc(struct nf10_adapter *adapter, u64 last_gc_addr)
 	struct desc *desc, *_desc;
 	bool empty;
 	
+	spin_lock(&pending_gc_head.lock);
 	lbuf_for_each_entry_safe(desc, _desc, &pending_gc_head) {
 		__lbuf_del(desc);
 		lbuf_gc(adapter, desc);
@@ -409,6 +409,7 @@ static bool clean_tx_pending_gc(struct nf10_adapter *adapter, u64 last_gc_addr)
 		}
 	}
 	empty = lbuf_queue_empty(&pending_gc_head);
+	spin_unlock(&pending_gc_head.lock);
 
 	return empty;
 }
@@ -416,6 +417,7 @@ static bool clean_tx_pending_gc(struct nf10_adapter *adapter, u64 last_gc_addr)
 static void check_tx_completion(void)
 {
 	u32 *completion = tx_completion_kern_addr();
+	int cleaned = 0;
 
 	while (tx_desc_empty() == false &&
 	       completion[tx_cons()] == TX_COMPLETION_OKAY) {
@@ -431,10 +433,13 @@ static void check_tx_completion(void)
 		clean_desc(desc);
 		completion[tx_cons()] = 0;
 		mb();
+		cleaned = 1;
 
 		/* update cons */
 		inc_tx_cons();
 	}
+	if (cleaned)
+		queue_work(tx_wq, &tx_work);
 #if 0	/* for heavy HW debugging */
 	if (!debug_count || debug_count >> 13)
 		pr_debug("chktx[c=%u:p=%u] - desc=%p empty=%d completion=[%x:%x] dma_addr/kern_addr/skb=%p/%p/%p\n",
@@ -959,7 +964,8 @@ static void lbuf_tx_worker(struct work_struct *work)
 		check_tx_completion();
 		if (tx_desc_full()) {
 			lbuf_queue_head(&tx_queue_head, desc);
-			break;
+			/* it should be break, but do polling for maximum HW perf for now */
+			continue;
 		}
 		if (unlikely(desc->offset == 0))
 			continue;
@@ -987,12 +993,11 @@ static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 	 * we can avoid add and delete to-be-cleaned desc to/from gc list */
 again:
 	spin_lock_irqsave(&tx_lock, flags);
-
 	check_tx_completion();
+	spin_unlock_irqrestore(&tx_lock, flags);
+
 	tx_last_gc_addr = *tx_last_gc_addr_ptr;
 	complete = clean_tx_pending_gc(adapter, tx_last_gc_addr);
-
-	spin_unlock_irqrestore(&tx_lock, flags);
 
 	if (tx_last_gc_addr != *tx_last_gc_addr_ptr) {
 		netif_dbg(adapter, drv, default_netdev(adapter),
