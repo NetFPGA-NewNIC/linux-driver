@@ -72,13 +72,11 @@ extern void nf10_lbuf_set_hw_ops(struct nf10_adapter *adapter);
 struct desc {
 	void			*kern_addr;
 	dma_addr_t		dma_addr;
-	struct sk_buff		*skb;
+	struct sk_buff_head	skbq;
 	u32			size;
 	u32			offset;
 	struct list_head	list;
 };
-#define clean_desc(desc)	\
-	do { desc->kern_addr = NULL; } while(0)
 
 struct lbuf_head {
 	struct list_head head;

@@ -160,7 +160,7 @@ static inline void *alloc_lbuf(struct nf10_adapter *adapter, struct desc *desc)
 #endif
 	desc->size = LBUF_SIZE;
 	desc->offset = 0;
-	desc->skb = NULL;
+	__skb_queue_head_init(&desc->skbq);
 
 	return desc->kern_addr;
 }
@@ -223,6 +223,19 @@ static struct desc *alloc_desc(void)
 static void free_desc(struct desc *desc)
 {
 	kmem_cache_free(desc_cache, desc);
+}
+
+static void clean_desc(struct desc *desc)
+{
+	desc->kern_addr = NULL;
+	__skb_queue_head_init(&desc->skbq);
+}
+
+static void copy_desc(struct desc *to, struct desc *from)
+{
+	*to = *from;
+	__skb_queue_head_init(&to->skbq);
+	skb_queue_splice(&from->skbq, &to->skbq);
 }
 
 static struct desc *get_lbuf(struct nf10_adapter *adapter)
@@ -364,9 +377,7 @@ static int add_to_pending_gc_list(struct desc *desc)
 		pr_err("Error: failed to alloc pdesc causing memory leak\n");
 		return -ENOMEM;
 	}
-
-	*pdesc = *desc;	/* copy */
-
+	copy_desc(pdesc, desc);
 	lbuf_queue_tail(&pending_gc_head, pdesc);
 
 	return 0;
@@ -374,19 +385,30 @@ static int add_to_pending_gc_list(struct desc *desc)
 
 static void lbuf_gc(struct nf10_adapter *adapter, struct desc *desc)
 {
+	int skbq_empty = skb_queue_empty(&desc->skbq);
+	struct sk_buff *skb, *first_skb;
+
 	BUG_ON(!desc);
 	BUG_ON(!desc->kern_addr);
 
 	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "gctx: addr=%p skb=%p\n", (void *)desc->dma_addr, desc->skb);
+		  "gctx: addr=%p skbq empty=%d\n", (void *)desc->dma_addr, skbq_empty);
 
 	pci_unmap_single(adapter->pdev, desc->dma_addr, desc->offset,
 			 PCI_DMA_TODEVICE);
 
-	/* FIXME: skb should be a list */
-	if (desc->skb)
-		dev_kfree_skb_any(desc->skb);
-	else
+	/* keep the first skb before dequeue */
+	first_skb = skb_peek(&desc->skbq);
+
+	/* lbuf has dependent skbs. It is already protected by
+	 * pending_gc_head.lock, so use __skb_dequeue() */
+	if (!skbq_empty)
+		while((skb = __skb_dequeue(&desc->skbq)))
+			dev_kfree_skb_any(skb);
+
+	/* unless skb->data == desc->kern_addr, lbuf was transmitted as a proxy 
+	 * of skbs, so free lbuf as well. */
+	if (first_skb == NULL || first_skb->data != desc->kern_addr)
 		free_lbuf(adapter, desc);
 
 	free_desc(desc);
@@ -426,7 +448,8 @@ static void check_tx_completion(void)
 		add_to_pending_gc_list(desc);
 #if 0	/* for heavy HW debugging */
 		pr_debug("cltx[%u]: desc=%p dma_addr/kern_addr/skb=%p/%p/%p\n",
-			 tx_cons(), desc, (void *)desc->dma_addr, desc->kern_addr, desc->skb);
+			 tx_cons(), desc, (void *)desc->dma_addr, desc->kern_addr,
+			 skb_queue_len(&desc->skbq) > 0 ? desc->skbq.next : NULL);
 #endif
 
 		/* clean */
@@ -444,7 +467,8 @@ static void check_tx_completion(void)
 	if (!debug_count || debug_count >> 13)
 		pr_debug("chktx[c=%u:p=%u] - desc=%p empty=%d completion=[%x:%x] dma_addr/kern_addr/skb=%p/%p/%p\n",
 		 tx_cons(), tx_prod(), tx_cons_desc(), tx_desc_empty(), completion[0], completion[1],
-		 (void *)tx_cons_desc()->dma_addr, tx_cons_desc()->kern_addr, tx_cons_desc()->skb);
+		 (void *)tx_cons_desc()->dma_addr, tx_cons_desc()->kern_addr,
+		 skb_queue_len(&tx_cons_desc()->skbq) > 0 ? tx_cons_desc()->skbq.next : NULL);
 #endif
 }
 
@@ -756,7 +780,13 @@ static void nf10_lbuf_free(struct nf10_adapter *adapter)
 
 static int nf10_lbuf_init_buffers(struct nf10_adapter *adapter)
 {
+	int i;
 	int err = 0;
+
+	/* initialize descriptors and pointers. RX descriptors are initialized
+	 * by the following __nf10_lbuf_free_buffers */
+	for (i = 0; i < NR_LBUF; i++)
+		clean_desc(get_desc(TX, i));
 
 	tx_prod() = tx_cons() = rx_prod() = rx_cons() = 0;
 
@@ -796,7 +826,7 @@ static int consume_rx_desc(struct nf10_adapter *adapter, struct desc *desc)
 	}
 
 	/* copy metadata to allow for further producing rx buffer */
-	*desc = *rx_cons_desc();
+	copy_desc(desc, rx_cons_desc());
 
 #ifndef CONFIG_USER_ONLY	/* if user-only, no clean desc */
 	/* XXX: for user to permanently reuse current buffers,
@@ -847,7 +877,7 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 }
 
 static int lbuf_xmit(struct nf10_adapter *adapter, void *buf_addr,
-		     unsigned int len, struct sk_buff *skb)
+		     unsigned int len, struct sk_buff_head *skbq)
 {
 	u32 nr_qwords;
 	struct desc *desc = tx_prod_desc();
@@ -866,13 +896,14 @@ static int lbuf_xmit(struct nf10_adapter *adapter, void *buf_addr,
 		return -EIO;
 	}
 	desc->kern_addr = buf_addr;
-	desc->skb = skb;
 	desc->offset = len;
+	skb_queue_splice(skbq, &desc->skbq);
 
 	netif_dbg(adapter, drv, default_netdev(adapter),
 		 "\trqtx[%u]: desc=%p len=%u, dma_addr/kern_addr/skb=%p/%p/%p,"
 		 "nr_qwords=%u, addr=0x%x, stat=0x%x\n",
-		 tx_prod(), desc, len, (void *)desc->dma_addr, desc->kern_addr, desc->skb,
+		 tx_prod(), desc, len, (void *)desc->dma_addr, desc->kern_addr,
+		 skbq && skb_queue_len(skbq) > 0 ? skbq->next : NULL,	/* first skb in skbq */
 		 nr_qwords, tx_addr_off(tx_prod()), tx_stat_off(tx_prod()));
 
 	nf10_writeq(adapter, tx_addr_off(tx_prod()), desc->dma_addr);
@@ -893,7 +924,8 @@ static void debug_tx_desc_full(void)
 		 * remain the this if body with the following message */
 		pr_warn("FULL [c=%u:p=%u] - desc=%p empty=%d completion=[%x:%x] dma_addr/kern_addr/skb=%p/%p/%p\n",
 				tx_cons(), tx_prod(), tx_cons_desc(), tx_desc_empty(), completion[0], completion[1],
-				(void *)tx_cons_desc()->dma_addr, tx_cons_desc()->kern_addr, tx_cons_desc()->skb);
+				(void *)tx_cons_desc()->dma_addr, tx_cons_desc()->kern_addr,
+				skb_queue_len(&tx_cons_desc()->skbq) ? tx_cons_desc()->skbq.next : NULL);
 
 		print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_NONE,
 				16, 1, tx_cons_desc()->kern_addr, 128, true);
@@ -908,6 +940,7 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 	unsigned long flags;
 	unsigned int headroom, headroom_to_expand;
 	int ret;
+	struct sk_buff_head skbq;
 
 	spin_lock_irqsave(&tx_lock, flags);
 
@@ -941,7 +974,9 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 	LBUF_SET_TX_METADATA(skb->data, netdev_port_num(netdev),
 			     skb->len - LBUF_TX_METADATA_SIZE);
 
-	ret = lbuf_xmit(adapter, skb->data, skb->len, skb);
+	__skb_queue_head_init(&skbq);
+	__skb_queue_tail(&skbq, skb);
+	ret = lbuf_xmit(adapter, skb->data, skb->len, &skbq);
 
 	spin_unlock_irqrestore(&tx_lock, flags);
 
@@ -969,7 +1004,7 @@ static void lbuf_tx_worker(struct work_struct *work)
 		}
 		if (unlikely(desc->offset == 0))
 			continue;
-		lbuf_xmit(adapter, desc->kern_addr, desc->offset, desc->skb);
+		lbuf_xmit(adapter, desc->kern_addr, desc->offset, &desc->skbq);
 		free_desc(desc);
 	}
 	spin_unlock_irqrestore(&tx_lock, flags);
