@@ -1037,8 +1037,7 @@ static void lbuf_tx_worker(struct work_struct *work)
 		check_tx_completion();
 		if (tx_desc_full()) {
 			lbuf_queue_head(&tx_queue_head, desc);
-			/* it should be break, but do polling for maximum HW perf for now */
-			continue;
+			break;
 		}
 		if (unlikely(desc->offset == 0))
 			continue;
