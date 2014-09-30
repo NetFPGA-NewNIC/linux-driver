@@ -357,10 +357,9 @@ static int add_packet_to_lbuf(struct desc *desc, int port_num,
 	if (skb)
 		add_skb_to_lbuf(desc, skb);
 #if 0
-	pr_debug("%s: port_num=%d pkt_addr=%p pkt_len=%u desc->(kern_addr=%p offset=%u)\n",
-		__func__, port_num, pkt_addr, pkt_len, desc->kern_addr, desc->offset);
+	pr_debug("%s: port_num=%d pkt_addr=%p pkt_len=%u desc->(kern_addr=%p offset=%u) skb=%p\n",
+		__func__, port_num, pkt_addr, pkt_len, desc->kern_addr, desc->offset, skb);
 #endif
-
 	return 0;
 }
 
@@ -440,8 +439,11 @@ static void lbuf_gc(struct nf10_adapter *adapter, struct desc *desc)
 	pci_unmap_single(adapter->pdev, desc->dma_addr, desc->offset,
 			 PCI_DMA_TODEVICE);
 
-	while ((skb = del_skb_from_lbuf(desc)))
+	while ((skb = del_skb_from_lbuf(desc))) {
+		netif_dbg(adapter, drv, default_netdev(adapter),
+			  "\t--gcskb=%p\n", skb);
 		dev_kfree_skb_any(skb);
+	}
 
 	if (decoupled_buf)
 		free_lbuf(adapter, desc);
