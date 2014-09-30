@@ -308,7 +308,7 @@ static struct desc *get_tx_lbuf_from_queue(struct nf10_adapter *adapter,
 }
 
 static int add_packet_to_lbuf(struct desc *desc, int port_num,
-			      void *pkt_addr, unsigned int pkt_len)
+		void *pkt_addr, unsigned int pkt_len, struct sk_buff *skb)
 {
 	void *buf_addr;
 
@@ -322,19 +322,21 @@ static int add_packet_to_lbuf(struct desc *desc, int port_num,
 	memcpy(buf_addr, pkt_addr, pkt_len);
 	desc->offset += (LBUF_TX_METADATA_SIZE + pkt_len);
 	desc->offset = ALIGN(desc->offset, 8 /* qword */);
+	if (skb)
+		__skb_queue_tail(&desc->skbq, skb);
 
-#if 0
 	pr_debug("%s: port_num=%d pkt_addr=%p pkt_len=%u desc->(kern_addr=%p offset=%u)\n",
 		__func__, port_num, pkt_addr, pkt_len, desc->kern_addr, desc->offset);
-#endif
 
 	return 0;
 }
 
 static int queue_tx_packet(struct nf10_adapter *adapter, int port_num,
-			   void *pkt_addr, unsigned int pkt_len)
+			   struct sk_buff *skb)
 {
 	struct lbuf_head *head = &tx_queue_head;
+	void *pkt_addr = skb->data;
+	unsigned int pkt_len = skb->len;
 	struct desc *desc;
 	int ret = 0;
 
@@ -345,9 +347,13 @@ static int queue_tx_packet(struct nf10_adapter *adapter, int port_num,
 		ret = -ENOMEM;
 		goto out;
 	}
-	ret = add_packet_to_lbuf(desc, port_num, pkt_addr, pkt_len);
+	ret = add_packet_to_lbuf(desc, port_num, pkt_addr, pkt_len, skb);
 out:
 	spin_unlock(&head->lock);
+
+	if (likely(ret == 0))
+		queue_work(tx_wq, &tx_work);
+
 	return ret;
 }
 
@@ -714,7 +720,7 @@ static unsigned long nf10_lbuf_gen(struct nf10_adapter *adapter,
 			if ((desc = get_lbuf(adapter)) == NULL)
 				goto out;
 		}
-		if (add_packet_to_lbuf(desc, 0, pkt_addr, pkt_len) < 0) {
+		if (add_packet_to_lbuf(desc, 0, pkt_addr, pkt_len, NULL) < 0) {
 			put_lbuf(adapter, desc);
 			goto out;
 		}
@@ -956,6 +962,14 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 		return NETDEV_TX_BUSY;
 	}
 	debug_count = 0;
+
+#if 0
+	/* TEST */
+	queue_tx_packet(adapter, netdev_port_num(netdev), skb);
+	netdev->stats.tx_packets++;
+	return NETDEV_TX_OK;
+	/********/
+#endif
 
 	/* TODO: if skb is shared, must allocate separate buf
 	 * so, w/o it, pktgen is not working */
