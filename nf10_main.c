@@ -227,6 +227,7 @@ static int nf10_down(struct net_device *netdev)
 		netif_napi_del(&adapter->napi);
 		nf10_free_buffers(adapter);
 		buffer_initialized = false;
+		reset = false;
 	}
 
 	netif_info(adapter, ifdown, netdev, "down\n");
