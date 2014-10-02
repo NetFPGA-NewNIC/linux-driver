@@ -115,18 +115,26 @@ static int nf10_mmap(struct file *f, struct vm_area_struct *vma)
 	return err;
 }
 
+#define AXI_LOOP_THRESHOLD	100000000
 static int write_axi(struct nf10_adapter *adapter, u64 addr_val)
 {
 	volatile u64 *completion = axi_write_completion(adapter);
 	u32 ret;
+	unsigned long loop = 0;
 
 	/* init -> write addr & val -> poll stat -> return stat */
 	*completion = 0;
+	wmb();
 	writeq(addr_val, adapter->bar0 + AXI_WRITE_ADDR);
-	while ((ret = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT);
+	while ((ret = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT) {
+		if (++loop >= AXI_LOOP_THRESHOLD) {
+			ret = AXI_COMPLETION_NACK;
+			break;
+		}
+	}
 	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "%s: addr=%llx val=%llx ret=%d\n",
-		  __func__, addr_val >> 32, addr_val & 0xffffffff, ret);
+		  "%s: addr=%llx val=%llx ret=%d (loop=%lu)\n",
+		  __func__, addr_val >> 32, addr_val & 0xffffffff, ret, loop);
 
 	return ret;
 }
@@ -135,15 +143,22 @@ static int read_axi(struct nf10_adapter *adapter, u64 addr, u64 *val)
 {
 	volatile u64 *completion = axi_read_completion(adapter);
 	u32 ret;
+	unsigned long loop = 0;
 
 	/* init -> write addr -> poll stat -> return val & stat */
 	*completion = 0;
+	wmb();
 	writeq(addr, adapter->bar0 + AXI_READ_ADDR);
-	while ((ret = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT);
+	while ((ret = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT) {
+		if (++loop >= AXI_LOOP_THRESHOLD) {
+			ret = AXI_COMPLETION_NACK;
+			break;
+		}
+	}
 	*val = axi_completion_data(*completion);
 	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "%s: addr=%llx val=%llx ret=%d\n",
-		  __func__, addr, *val, ret);
+		  "%s: addr=%llx val=%llx ret=%d (loop=%lu)\n",
+		  __func__, addr, *val, ret, loop);
 
 	return ret;
 }
@@ -215,6 +230,8 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		break;
 	}
 	case NF10_IOCTL_CMD_PREPARE_RX:
+		netif_dbg(adapter, drv, default_netdev(adapter),
+			  "user-driven lbuf preparation: i=%lu\n", arg);
 		adapter->user_ops->prepare_rx_buffer(adapter, arg);
 		break;
 	case NF10_IOCTL_CMD_WAIT_INTR:
@@ -338,11 +355,16 @@ bool nf10_user_rx_callback(struct nf10_adapter *adapter)
 	if (adapter->nr_user_mmap > 0) { 
 		if (likely(waitqueue_active(&adapter->wq_user_intr))) {
 			wmb();	/* adapter->user_private */
+
+			netif_dbg(adapter, drv, default_netdev(adapter),
+				  "waking up user process (user_private=%lu)\n",
+				  adapter->user_private);
 			wake_up(&adapter->wq_user_intr);
 		}
 		else
-			pr_debug("WARN: mmap > 0 (=%u) but no waiting task!\n",
-				adapter->nr_user_mmap);
+			netif_dbg(adapter, drv, default_netdev(adapter),
+				  "mmaped (=%u) but no waiting task (user_private=%lu)\n",
+				  adapter->nr_user_mmap, adapter->user_private);
 		return true;
 	}
 	return false;
