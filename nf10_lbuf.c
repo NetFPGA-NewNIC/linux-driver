@@ -334,10 +334,6 @@ static void check_tx_completion(void)
 		struct desc *desc = tx_cons_desc();
 
 		add_to_pending_gc_list(desc);
-#if 0	/* for heavy HW debugging */
-		pr_debug("cltx[%u]: desc=%p dma_addr/kern_addr/skb=%p/%p/%p\n",
-			 tx_cons(), desc, (void *)desc->dma_addr, desc->kern_addr, desc->skb);
-#endif
 
 		/* clean */
 		clean_desc(desc);
@@ -347,12 +343,6 @@ static void check_tx_completion(void)
 		/* update cons */
 		inc_tx_cons();
 	}
-#if 0	/* for heavy HW debugging */
-	if (!debug_count || debug_count >> 13)
-		pr_debug("chktx[c=%u:p=%u] - desc=%p empty=%d completion=[%x:%x] dma_addr/kern_addr/skb=%p/%p/%p\n",
-		 tx_cons(), tx_prod(), tx_cons_desc(), tx_desc_empty(), completion[0], completion[1],
-		 (void *)tx_cons_desc()->dma_addr, tx_cons_desc()->kern_addr, tx_cons_desc()->skb);
-#endif
 }
 
 static void enable_intr(struct nf10_adapter *adapter)
