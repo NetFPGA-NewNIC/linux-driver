@@ -359,9 +359,11 @@ static int add_packet_to_lbuf(struct desc *desc, int port_num,
 	if (skb)
 		add_skb_to_lbuf(desc, skb);
 
+#if 0
 	netif_dbg(adapter, tx_queued, default_netdev(adapter),
 		"qpkt: cpu%d pid=%d comm=%s port_num=%d pkt_addr=%p pkt_len=%u desc->(kern_addr=%p offset=%u) skb=%p\n",
 		smp_processor_id(), current->pid, current->comm, port_num, pkt_addr, pkt_len, desc->kern_addr, desc->offset, skb);
+#endif
 	return 0;
 }
 
@@ -939,7 +941,9 @@ static int lbuf_xmit(struct nf10_adapter *adapter, void *buf_addr,
 		 nr_qwords, tx_addr_off(tx_prod()), tx_stat_off(tx_prod()));
 
 	wmb();
+#if 0	/* performance test */
 	clflush_cache_range(buf_addr, len);
+#endif
 	nf10_writeq(adapter, tx_addr_off(tx_prod()), desc->dma_addr);
 	nf10_writel(adapter, tx_stat_off(tx_prod()), nr_qwords);
 
