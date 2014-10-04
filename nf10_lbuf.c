@@ -1037,8 +1037,10 @@ static void lbuf_tx_worker(struct work_struct *work)
 			lbuf_queue_head(&tx_queue_head, desc);
 			break;
 		}
-		if (unlikely(desc->offset == 0))
+		if (unlikely(desc->offset == 0)) {
+			free_desc(desc);
 			continue;
+		}
 		lbuf_xmit(adapter, desc->kern_addr, desc->offset, desc->skb);
 		free_desc(desc);
 	}
