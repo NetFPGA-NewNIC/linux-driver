@@ -973,16 +973,15 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 	unsigned int headroom, headroom_to_expand;
 	int ret;
 
-	spin_lock_irqsave(&tx_lock, flags);
-
-	check_tx_completion();
-
 	/* TEST */
 	queue_tx_packet(adapter, netdev_port_num(netdev), skb);
 	netdev->stats.tx_packets++;
-	spin_unlock_irqrestore(&tx_lock, flags);
 	return NETDEV_TX_OK;
 	/********/
+
+	spin_lock_irqsave(&tx_lock, flags);
+
+	check_tx_completion();
 
 	if (tx_desc_full()) {
 		debug_tx_desc_full();
