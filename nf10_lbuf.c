@@ -343,6 +343,7 @@ static struct desc *get_tx_lbuf_from_queue(struct nf10_adapter *adapter,
 static int add_packet_to_lbuf(struct desc *desc, int port_num,
 		void *pkt_addr, unsigned int pkt_len, struct sk_buff *skb)
 {
+	struct nf10_adapter *adapter = lbuf_hw.adapter;
 	void *buf_addr;
 
 	buf_addr = desc->kern_addr + desc->offset;
@@ -357,10 +358,10 @@ static int add_packet_to_lbuf(struct desc *desc, int port_num,
 	desc->offset = ALIGN(desc->offset, 8 /* qword */);
 	if (skb)
 		add_skb_to_lbuf(desc, skb);
-#if 0
-	pr_debug("%s: port_num=%d pkt_addr=%p pkt_len=%u desc->(kern_addr=%p offset=%u) skb=%p\n",
-		__func__, port_num, pkt_addr, pkt_len, desc->kern_addr, desc->offset, skb);
-#endif
+
+	netif_dbg(adapter, tx_queued, default_netdev(adapter),
+		"qpkt: cpu%d pid=%d comm=%s port_num=%d pkt_addr=%p pkt_len=%u desc->(kern_addr=%p offset=%u) skb=%p\n",
+		smp_processor_id(), current->pid, current->comm, port_num, pkt_addr, pkt_len, desc->kern_addr, desc->offset, skb);
 	return 0;
 }
 
@@ -678,9 +679,9 @@ next_pkt:
 	netdev->stats.rx_packets += rx_packets;
 
 	netif_dbg(adapter, rx_status, netdev,
-		  "RX lbuf delivered to host nr_dwords=%u rx_packets=%u/%lu" 
-		  " alloc=%llu memcpy=%llu skbpass=%llu\n",
-		  nr_dwords, rx_packets, netdev->stats.rx_packets,
+		  "RX lbuf to host nr_dwords=%u rx_packets=%u/%lu on cpu%d " 
+		  "(alloc=%llu memcpy=%llu skbpass=%llu)\n",
+		  nr_dwords, rx_packets, netdev->stats.rx_packets, smp_processor_id(),
 		  ELAPSED_CYCLES(0), ELAPSED_CYCLES(1), ELAPSED_CYCLES(2));
 
 	return 0;
@@ -932,9 +933,9 @@ static int lbuf_xmit(struct nf10_adapter *adapter, void *buf_addr,
 	desc->skb = skb;
 
 	netif_dbg(adapter, tx_queued, default_netdev(adapter),
-		 "\trqtx[%u]: desc=%p len=%u, dma_addr/kern_addr/skb=%p/%p/%p,"
+		 "\trqtx[%u]: cpu%d desc=%p len=%u, dma_addr/kern_addr/skb=%p/%p/%p,"
 		 "nr_qwords=%u, addr=0x%x, stat=0x%x\n",
-		 tx_prod(), desc, len, (void *)desc->dma_addr, desc->kern_addr, desc->skb,
+		 tx_prod(), smp_processor_id(), desc, len, (void *)desc->dma_addr, desc->kern_addr, desc->skb,
 		 nr_qwords, tx_addr_off(tx_prod()), tx_stat_off(tx_prod()));
 
 	wmb();
@@ -1029,7 +1030,7 @@ static void lbuf_tx_worker(struct work_struct *work)
 	unsigned long flags;
 
 	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "%s scheduled\n", __func__);
+		  "%s scheduled on cpu%d\n", __func__, smp_processor_id());
 	spin_lock_irqsave(&tx_lock, flags);
 	while ((desc = lbuf_dequeue(&tx_queue_head))) {
 		check_tx_completion();
@@ -1061,7 +1062,7 @@ static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 	}
 
 	netif_dbg(adapter, drv, default_netdev(adapter),
-		"tx-irq: gc_addr=%p\n", (void *)(*tx_last_gc_addr_ptr));
+		"tx-irq: cpu%d gc_addr=%p\n", smp_processor_id(), (void *)(*tx_last_gc_addr_ptr));
 
 	/* TODO: optimization possible in case where one-by-one tx/completion,
 	 * we can avoid add and delete to-be-cleaned desc to/from gc list */
@@ -1089,7 +1090,7 @@ again:
 	}
 
 	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "tx-irq: clean complete=%d\n", complete);
+		  "tx-irq: cpu%d clean complete=%d\n", smp_processor_id(), complete);
 
 	return complete;
 }
