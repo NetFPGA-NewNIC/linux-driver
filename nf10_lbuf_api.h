@@ -100,7 +100,7 @@
 #define LBUF_IS_PORT_VALID(port_num)		(port_num >=0 && port_num < LBUF_NR_PORTS)
 #define LBUF_IS_PKT_VALID(port_num, pkt_len)	(LBUF_IS_PORT_VALID(port_num) && pkt_len >= 60 && pkt_len <= 1518)
 
-#if defined(CONFIG_NR_PORTS) || (CONFIG_NR_PORTS == 1)
+#if defined(CONFIG_NR_PORTS) && (CONFIG_NR_PORTS == 1)
 #define LBUF_PKT_PORT_NUM(buf_addr, dword_idx)	(0)
 #else
 /* port encode/decode */
