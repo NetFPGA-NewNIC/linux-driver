@@ -418,6 +418,8 @@ static int add_to_pending_gc_list(struct desc *desc)
 	}
 	copy_desc(pdesc, desc);
 	lbuf_queue_tail(&pending_gc_head, pdesc);
+	/* for lockless emptiness check in nf10_lbuf_clean_tx_irq */
+	smp_wmb();
 
 	return 0;
 }
@@ -441,8 +443,10 @@ static void lbuf_gc(struct nf10_adapter *adapter, struct desc *desc)
 			 PCI_DMA_TODEVICE);
 
 	while ((skb = del_skb_from_lbuf(desc))) {
+#if 0
 		netif_dbg(adapter, drv, default_netdev(adapter),
 			  "\t--gcskb=%p\n", skb);
+#endif
 		dev_kfree_skb_any(skb);
 	}
 
@@ -452,15 +456,13 @@ static void lbuf_gc(struct nf10_adapter *adapter, struct desc *desc)
 	free_desc(desc);
 }
 
-/* should be called with tx_lock held */
 static bool clean_tx_pending_gc(struct nf10_adapter *adapter, u64 last_gc_addr)
 {
-	struct desc *desc, *_desc;
-	bool empty;
+	struct desc *desc;
 	
-	spin_lock(&pending_gc_head.lock);
-	lbuf_for_each_entry_safe(desc, _desc, &pending_gc_head) {
-		__lbuf_del(desc);
+	while((desc = lbuf_dequeue(&pending_gc_head))) {
+		/* for lockless emptiness check in nf10_lbuf_clean_tx_irq */
+		smp_wmb();
 		lbuf_gc(adapter, desc);
 		if (desc->dma_addr == last_gc_addr) {
 			netif_dbg(adapter, drv, default_netdev(adapter),
@@ -468,12 +470,10 @@ static bool clean_tx_pending_gc(struct nf10_adapter *adapter, u64 last_gc_addr)
 			break;
 		}
 	}
-	empty = lbuf_queue_empty(&pending_gc_head);
-	spin_unlock(&pending_gc_head.lock);
-
-	return empty;
+	return desc == NULL;	/* empty: tx gc completed */
 }
 
+/* should be called with tx_lock held */
 static void check_tx_completion(void)
 {
 	u32 *completion = tx_completion_kern_addr();
@@ -802,15 +802,9 @@ static int nf10_lbuf_init(struct nf10_adapter *adapter)
 
 static void nf10_lbuf_free(struct nf10_adapter *adapter)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&tx_lock, flags);
 	/* 0: purge all pending descs: not empty -> bug */
 	BUG_ON(!clean_tx_pending_gc(adapter, 0));
-	spin_unlock_irqrestore(&tx_lock, flags);
-
 	destroy_workqueue(tx_wq);
-
 	kmem_cache_destroy(desc_cache);
 }
 
@@ -937,7 +931,7 @@ static int lbuf_xmit(struct nf10_adapter *adapter, void *buf_addr,
 	desc->offset = len;
 	desc->skb = skb;
 
-	netif_dbg(adapter, drv, default_netdev(adapter),
+	netif_dbg(adapter, tx_queued, default_netdev(adapter),
 		 "\trqtx[%u]: desc=%p len=%u, dma_addr/kern_addr/skb=%p/%p/%p,"
 		 "nr_qwords=%u, addr=0x%x, stat=0x%x\n",
 		 tx_prod(), desc, len, (void *)desc->dma_addr, desc->kern_addr, desc->skb,
@@ -1053,14 +1047,18 @@ static void lbuf_tx_worker(struct work_struct *work)
 
 static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 {
-	u64 *tx_last_gc_addr_ptr = get_tx_last_gc_addr();
+	volatile u64 *tx_last_gc_addr_ptr = get_tx_last_gc_addr();
 	dma_addr_t tx_last_gc_addr;
 	int complete;
 	unsigned long flags;
 
-	/* no gc buffer updated */
-	if (*tx_last_gc_addr_ptr == 0)
-		return 1;	/* clean complete */
+	/* no gc buffer updated:
+	 * return false unless pending_gc_head is empty to keep polling */
+	rmb();
+	if (*tx_last_gc_addr_ptr == 0) {
+		smp_read_barrier_depends();
+		return lbuf_queue_empty(&pending_gc_head);
+	}
 
 	netif_dbg(adapter, drv, default_netdev(adapter),
 		"tx-irq: gc_addr=%p\n", (void *)(*tx_last_gc_addr_ptr));
@@ -1072,15 +1070,18 @@ again:
 	check_tx_completion();
 	spin_unlock_irqrestore(&tx_lock, flags);
 
+	rmb();
 	tx_last_gc_addr = *tx_last_gc_addr_ptr;
 	complete = clean_tx_pending_gc(adapter, tx_last_gc_addr);
 
+	rmb();
 	if (tx_last_gc_addr != *tx_last_gc_addr_ptr) {
 		netif_dbg(adapter, drv, default_netdev(adapter),
 			  "tx-irq: \ttry to clean again at 1st pass\n");
 		goto again;
 	}
 
+	rmb();
 	if (cmpxchg64(tx_last_gc_addr_ptr, tx_last_gc_addr, 0) != tx_last_gc_addr) {
 		netif_dbg(adapter, drv, default_netdev(adapter),
 			  "tx-irq: \ttry to clean again at 2nd pass\n");
