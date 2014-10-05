@@ -322,24 +322,6 @@ static void lbuf_queue_work(struct desc *desc)
 	queue_work(tx_wq, &tx_work);
 }
 
-/* should be called with tx_queue_head's lock being held */
-static struct desc *get_tx_lbuf_from_queue(struct nf10_adapter *adapter,
-					   unsigned int pkt_len)
-{
-	struct lbuf_head *head = &tx_queue_head;
-	struct desc *desc;
-
-	if (!lbuf_queue_empty(head)) {
-		desc = list_last_entry(&head->head, struct desc, list);
-		if (LBUF_HAS_TX_ROOM(desc->size, desc->offset, pkt_len))
-			return desc;
-	}
-	/* now no available lbuf in the queue */
-	if ((desc = get_lbuf(adapter)))
-		__lbuf_queue_tail(head, desc);
-	return desc;
-}
-
 static int add_packet_to_lbuf(struct desc *desc, int port_num,
 		void *pkt_addr, unsigned int pkt_len, struct sk_buff *skb)
 {
@@ -376,17 +358,30 @@ static int queue_tx_packet(struct nf10_adapter *adapter, int port_num,
 	struct desc *desc;
 	int ret = 0;
 
+	/* find the queued last lbuf that has enough room queue the packet:
+	 * it holds tx_queue_head's lock to find lbuf and copy packet to it */
 	spin_lock(&head->lock);
-
-	desc = get_tx_lbuf_from_queue(adapter, pkt_len);
-	if (unlikely(desc == NULL)) {
-		ret = -ENOMEM;
-		goto out;
+	if (!lbuf_queue_empty(head)) {
+		desc = list_last_entry(&head->head, struct desc, list);
+		if (LBUF_HAS_TX_ROOM(desc->size, desc->offset, pkt_len)) {
+			ret = add_packet_to_lbuf(desc, port_num,
+					pkt_addr, pkt_len, skb);
+			spin_unlock(&head->lock);
+			goto out;
+		}
 	}
-	ret = add_packet_to_lbuf(desc, port_num, pkt_addr, pkt_len, skb);
-out:
 	spin_unlock(&head->lock);
 
+	/* now need to allocate a new lbuf to push the packet */
+	if ((desc = get_lbuf(adapter)) == NULL)
+		return -ENOMEM;
+	ret = add_packet_to_lbuf(desc, port_num, pkt_addr, pkt_len, skb);
+	if (likely(ret == 0))
+		lbuf_queue_tail(head, desc);
+	else
+		put_lbuf(adapter, desc);
+out:
+	/* if the packet is queued, schedule lbuf_tx_worker */
 	if (likely(ret == 0))
 		queue_work(tx_wq, &tx_work);
 
