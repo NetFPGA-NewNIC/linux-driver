@@ -141,11 +141,14 @@ static inline void *alloc_lbuf(struct nf10_adapter *adapter, struct desc *desc)
 #ifndef CONFIG_LBUF_COHERENT
 	struct page *page;
 
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
-	page = alloc_pages(GFP_TRANSHUGE | GFP_ATOMIC, LBUF_ORDER);
-#else
+	/* TODO:
+	 * LBUF_ORDER is the same as 2MB hugepage, but if using GFP_TRANSHUGE,
+	 * it turns on __GFP_WAIT, which allows sleeping. However, alloc_lbuf
+	 * is usually called in atomic state, which means in_atomic() is true.
+	 * Currently, GFP_ATOMIC is just used, but in the future it will be
+	 * optimized using huge page. NOTE: conditional code will be needed for
+	 * old kernel version using CONFIG_TRANSPARENT_HUGEPAGE */
 	page = alloc_pages(GFP_ATOMIC, LBUF_ORDER);
-#endif
 	if (page) {
 		desc->kern_addr = page_address(page);
 		/* lbuf is prepared only if lbuf is invalidated */
