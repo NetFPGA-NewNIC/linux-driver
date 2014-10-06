@@ -551,11 +551,7 @@ static int deliver_packets(struct nf10_adapter *adapter, void *buf_addr,
 	DEFINE_TIMESTAMP(3);
 
 	do {
-#if CONFIG_NR_PORTS == 1
-		port_num = 0;
-#else
 		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
-#endif
 		pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
 
 		if (unlikely(LBUF_IS_PKT_VALID(port_num, pkt_len) == false)) {	
