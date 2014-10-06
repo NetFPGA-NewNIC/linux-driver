@@ -971,7 +971,6 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 					struct net_device *netdev)
 {
 	struct nf10_adapter *adapter = netdev_adapter(netdev);
-	unsigned long flags;
 	unsigned int headroom, headroom_to_expand;
 	int ret;
 
@@ -981,7 +980,7 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 	return NETDEV_TX_OK;
 	/********/
 
-	spin_lock_irqsave(&tx_lock, flags);
+	spin_lock(&tx_lock);
 
 	check_tx_completion();
 
@@ -990,7 +989,7 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 #if 0	/* TODO */
 		netif_stop_queue(dev);
 #endif
-		spin_unlock_irqrestore(&tx_lock, flags);
+		spin_unlock(&tx_lock);
 		return NETDEV_TX_BUSY;
 	}
 	debug_count = 0;
@@ -1016,7 +1015,7 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 	skb->prev = skb->next = skb;
 	ret = lbuf_xmit(adapter, skb->data, skb->len, skb);
 
-	spin_unlock_irqrestore(&tx_lock, flags);
+	spin_unlock(&tx_lock);
 
 	if (likely(ret == 0))
 		netdev->stats.tx_packets++;
@@ -1028,11 +1027,10 @@ static void lbuf_tx_worker(struct work_struct *work)
 {
 	struct nf10_adapter *adapter = lbuf_hw.adapter;
 	struct desc *desc;
-	unsigned long flags;
 
 	netif_dbg(adapter, drv, default_netdev(adapter),
 		  "%s scheduled on cpu%d\n", __func__, smp_processor_id());
-	spin_lock_irqsave(&tx_lock, flags);
+	spin_lock(&tx_lock);
 	while ((desc = lbuf_dequeue(&tx_queue_head))) {
 		check_tx_completion();
 		if (tx_desc_full()) {
@@ -1046,7 +1044,7 @@ static void lbuf_tx_worker(struct work_struct *work)
 		lbuf_xmit(adapter, desc->kern_addr, desc->offset, desc->skb);
 		free_desc(desc);
 	}
-	spin_unlock_irqrestore(&tx_lock, flags);
+	spin_unlock(&tx_lock);
 }
 
 static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
@@ -1054,7 +1052,6 @@ static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 	volatile u64 *tx_last_gc_addr_ptr = get_tx_last_gc_addr();
 	dma_addr_t tx_last_gc_addr;
 	int complete;
-	unsigned long flags;
 
 	/* no gc buffer updated:
 	 * return false unless pending_gc_head is empty to keep polling */
@@ -1070,9 +1067,9 @@ static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 	/* TODO: optimization possible in case where one-by-one tx/completion,
 	 * we can avoid add and delete to-be-cleaned desc to/from gc list */
 again:
-	spin_lock_irqsave(&tx_lock, flags);
+	spin_lock(&tx_lock);
 	check_tx_completion();
-	spin_unlock_irqrestore(&tx_lock, flags);
+	spin_unlock(&tx_lock);
 
 	rmb();
 	tx_last_gc_addr = *tx_last_gc_addr_ptr;
