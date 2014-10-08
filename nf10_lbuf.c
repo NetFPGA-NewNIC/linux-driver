@@ -924,10 +924,7 @@ static int lbuf_xmit(struct nf10_adapter *adapter, void *buf_addr,
 		 tx_prod(), smp_processor_id(), desc, len, (void *)desc->dma_addr, desc->kern_addr, desc->skb,
 		 nr_qwords, tx_addr_off(tx_prod()), tx_stat_off(tx_prod()));
 
-	/* mb-clflush-mb is strict flush to memory before tx request to HW */
-	mb();
-	clflush_cache_range(buf_addr, len);
-	mb();
+	clflush_cache_range(buf_addr, len);	/* now a placeholder, which will be removed */
 	nf10_writeq(adapter, tx_addr_off(tx_prod()), desc->dma_addr);
 	nf10_writel(adapter, tx_stat_off(tx_prod()), nr_qwords);
 
