@@ -485,10 +485,6 @@ static void check_tx_completion(void)
 		struct desc *desc = tx_cons_desc();
 
 		add_to_pending_gc_list(desc);
-#if 0	/* for heavy HW debugging */
-		pr_debug("cltx[%u]: desc=%p dma_addr/kern_addr/skb=%p/%p/%p\n",
-			 tx_cons(), desc, (void *)desc->dma_addr, desc->kern_addr, desc->skb);
-#endif
 
 		/* clean */
 		clean_desc(desc);
@@ -501,12 +497,6 @@ static void check_tx_completion(void)
 	}
 	if (cleaned)
 		queue_work(tx_wq, &tx_work);
-#if 0	/* for heavy HW debugging */
-	if (!debug_count || debug_count >> 13)
-		pr_debug("chktx[c=%u:p=%u] - desc=%p empty=%d completion=[%x:%x] dma_addr/kern_addr/skb=%p/%p/%p\n",
-		 tx_cons(), tx_prod(), tx_cons_desc(), tx_desc_empty(), completion[0], completion[1],
-		 (void *)tx_cons_desc()->dma_addr, tx_cons_desc()->kern_addr, tx_cons_desc()->skb);
-#endif
 }
 
 static void enable_intr(struct nf10_adapter *adapter)
@@ -626,11 +616,7 @@ static int deliver_packets(struct nf10_adapter *adapter, void *buf_addr,
 	DEFINE_TIMESTAMP(3);
 
 	do {
-#if CONFIG_NR_PORTS == 1
-		port_num = 0;
-#else
 		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
-#endif
 		pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
 
 		if (unlikely(LBUF_IS_PKT_VALID(port_num, pkt_len) == false)) {	
@@ -938,10 +924,7 @@ static int lbuf_xmit(struct nf10_adapter *adapter, void *buf_addr,
 		 tx_prod(), smp_processor_id(), desc, len, (void *)desc->dma_addr, desc->kern_addr, desc->skb,
 		 nr_qwords, tx_addr_off(tx_prod()), tx_stat_off(tx_prod()));
 
-	wmb();
-#if 0	/* performance test */
-	clflush_cache_range(buf_addr, len);
-#endif
+	clflush_cache_range(buf_addr, len);	/* now a placeholder, which will be removed */
 	nf10_writeq(adapter, tx_addr_off(tx_prod()), desc->dma_addr);
 	nf10_writel(adapter, tx_stat_off(tx_prod()), nr_qwords);
 

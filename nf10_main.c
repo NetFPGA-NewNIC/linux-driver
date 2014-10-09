@@ -408,7 +408,7 @@ static int nf10_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 #ifdef CONFIG_PHY_INIT
 	if ((err = nf10_init_phy(pdev))) {
 		pr_err("failed to initialize PHY chip\n");
-		goto err_enable_msi;
+		goto err_request_irq;
 	}
 #endif
 
