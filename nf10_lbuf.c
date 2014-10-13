@@ -725,7 +725,6 @@ static int lbuf_xmit(struct net_device *netdev, void *buf_addr,
 		 nr_qwords, tx_addr_off(tx_prod()), tx_stat_off(tx_prod()));
 
 	wmb();
-	clflush_cache_range(buf_addr, len);
 	nf10_writeq(adapter, tx_addr_off(tx_prod()), desc->dma_addr);
 	nf10_writel(adapter, tx_stat_off(tx_prod()), nr_qwords);
 
