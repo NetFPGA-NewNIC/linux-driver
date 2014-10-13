@@ -1010,24 +1010,45 @@ static void lbuf_tx_worker(struct work_struct *work)
 {
 	struct nf10_adapter *adapter = lbuf_hw.adapter;
 	struct desc *desc;
+	bool cont = true;
 
 	netif_dbg(adapter, drv, default_netdev(adapter),
 		  "%s scheduled on cpu%d\n", __func__, smp_processor_id());
-	spin_lock_bh(&tx_lock);
+	while(cont) {
+		spin_lock_bh(&tx_lock);
+		desc = lbuf_dequeue(&tx_queue_head);
+		if (!desc)
+			cont = false;
+		else if (tx_desc_full()) {
+			lbuf_queue_head(&tx_queue_head, desc);
+			cont = false;
+		}
+		else
+			lbuf_xmit(adapter, desc->kern_addr, desc->offset, desc->skb);
+		spin_unlock_bh(&tx_lock);
+
+		if (cont)
+			free_desc(desc);
+	}
+#if 0
 	while ((desc = lbuf_dequeue(&tx_queue_head))) {
+		spin_lock_bh(&tx_lock);
 		check_tx_completion();
 		if (tx_desc_full()) {
+			spin_unlock_bh(&tx_lock);
 			lbuf_queue_head(&tx_queue_head, desc);
 			break;
 		}
 		if (unlikely(desc->offset == 0)) {
+			spin_unlock_bh(&tx_lock);
 			free_desc(desc);
 			continue;
 		}
 		lbuf_xmit(adapter, desc->kern_addr, desc->offset, desc->skb);
+		spin_unlock_bh(&tx_lock);
 		free_desc(desc);
 	}
-	spin_unlock_bh(&tx_lock);
+#endif
 }
 
 static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
