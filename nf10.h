@@ -15,7 +15,7 @@
 *	 This header file is the main header independent of DMA implmentation.
 *
 *	 This code is initially developed for the Network-as-a-Service (NaaS) project.
-*        
+*	 (under development in https://github.com/NetFPGA-NewNIC/linux-driver)
 *
 *  Copyright notice:
 *        Copyright (C) 2014 University of Cambridge

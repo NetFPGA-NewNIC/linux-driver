@@ -31,7 +31,7 @@
 *		- TX batching when available TX descriptor doesn't exist
 *
 *	 This code is initially developed for the Network-as-a-Service (NaaS) project.
-*        
+*	 (under development in https://github.com/NetFPGA-NewNIC/linux-driver)
 *
 *  Copyright notice:
 *        Copyright (C) 2014 University of Cambridge
