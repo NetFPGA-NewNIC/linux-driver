@@ -74,7 +74,7 @@ module_param(debug, int, 0);
 MODULE_PARM_DESC(debug, "Debug level");
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,12,0)
-static bool reset = true;	/* assume it's clean right after booting */
+static bool reset = true;	/* if need to reset, it is set to true */
 module_param(reset, bool, 0644);
 MODULE_PARM_DESC(reset, "PCIe reset sent");
 #endif
@@ -171,7 +171,7 @@ static int nf10_up(struct net_device *netdev)
 	int err;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,12,0)
-	if (reset == false) {
+	if (reset == true) {
 		/* The reason to reset pci here in up handler is
 		 * that reset is possible once pdev is probed, but
 		 * in probe handler, pdev/bus is locked so defer 
@@ -182,7 +182,7 @@ static int nf10_up(struct net_device *netdev)
 				  "failed to reset bus (err=%d)\n", err);
 			return err;
 		}
-		reset = true;
+		reset = false;
 		netif_info(adapter, ifup, netdev, "PCIe bus is reset\n");
 	}
 #endif
@@ -227,7 +227,9 @@ static int nf10_down(struct net_device *netdev)
 		netif_napi_del(&adapter->napi);
 		nf10_free_buffers(adapter);
 		buffer_initialized = false;
-		reset = false;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,12,0)
+		reset = true;
+#endif
 	}
 
 	netif_info(adapter, ifdown, netdev, "down\n");
