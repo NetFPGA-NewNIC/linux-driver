@@ -471,7 +471,8 @@ static bool clean_tx_pending_gc(struct nf10_adapter *adapter, u64 last_gc_addr)
 			break;
 		}
 	}
-	return desc == NULL;	/* empty: tx gc completed */
+	smp_read_barrier_depends();
+	return lbuf_queue_empty(&pending_gc_head);	/* completed */
 }
 
 /* should be called with tx_lock held */
