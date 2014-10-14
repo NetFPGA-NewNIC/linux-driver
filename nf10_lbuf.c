@@ -380,8 +380,25 @@ static void free_tx_completion_buffer(struct nf10_adapter *adapter)
  */
 static void nf10_lbuf_prepare_rx(struct nf10_adapter *adapter, unsigned long idx)
 {
-	void *kern_addr = get_desc(RX, idx)->kern_addr;
-	dma_addr_t dma_addr = get_desc(RX, idx)->dma_addr;
+	void *kern_addr;
+	dma_addr_t dma_addr;
+	struct desc *desc;
+
+	/* sanity check due to malicious user-driven preparation */
+	if (unlikely(idx >= NR_LBUF)) {
+		pr_err("%s: invalid descriptor index provided\n", __func__);
+		return;
+	}
+
+	desc = get_desc(RX, idx);
+
+	/* when changed from kernel to user packet processing mode:
+	 * this rarely happens */
+	if (unlikely(desc->kern_addr == NULL))
+		alloc_and_map_lbuf(adapter, desc, RX);
+
+	kern_addr = desc->kern_addr;
+	dma_addr = desc->dma_addr;
 
 	/* before sending a new lbuf to NIC, invalidate header space
 	 * by zeroing it so that it can poll the header to identify

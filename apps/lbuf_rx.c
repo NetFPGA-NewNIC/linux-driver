@@ -92,7 +92,7 @@ void finish(int sig)
 int main(int argc, char *argv[])
 {
 	uint64_t ret;
-	uint32_t rx_cons;
+	int32_t rx_cons = -1;
 	int i;
 	void *buf[NR_LBUF];
 	uint32_t *buf_addr;
@@ -132,7 +132,8 @@ int main(int argc, char *argv[])
 
 		/* wait interrupt: blocked */
 		ioctl(fd, NF10_IOCTL_CMD_WAIT_INTR, &ret);
-		rx_cons = (uint32_t)ret;
+		if (rx_cons == -1)
+			rx_cons = (int32_t)ret;
 lbuf_poll_loop:
 		rx_packets = 0;
 
