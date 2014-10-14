@@ -791,7 +791,9 @@ static int nf10_lbuf_init(struct nf10_adapter *adapter)
 static void nf10_lbuf_free(struct nf10_adapter *adapter)
 {
 	/* 0: purge all pending descs: not empty -> bug */
+	local_bh_disable();
 	BUG_ON(!clean_tx_pending_gc(adapter, 0));
+	local_bh_enable();
 	destroy_workqueue(tx_wq);
 	kmem_cache_destroy(desc_cache);
 }
