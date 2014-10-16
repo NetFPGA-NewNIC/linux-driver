@@ -1020,6 +1020,7 @@ static void lbuf_tx_worker(struct work_struct *work)
 	while(cont) {
 		spin_lock_bh(&tx_lock);
 		desc = lbuf_dequeue(&tx_queue_head);
+		check_tx_completion();
 		if (!desc)
 			cont = false;
 		else if (tx_desc_full()) {
