@@ -18,6 +18,7 @@
 *	 by assigning the same command codes to NF10_IOCTL_CMD_{WRITE|READ}_REG.
 *
 *	 This code is initially developed for the Network-as-a-Service (NaaS) project.
+*	 (under development in https://github.com/NetFPGA-NewNIC/linux-driver)
 *        
 *
 *  Copyright notice:

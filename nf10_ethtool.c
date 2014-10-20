@@ -22,6 +22,7 @@
 *		- Standard offloading control such as gso/gro
 *
 *	 This code is initially developed for the Network-as-a-Service (NaaS) project.
+*	 (under development in https://github.com/NetFPGA-NewNIC/linux-driver)
 *        
 *
 *  Copyright notice:

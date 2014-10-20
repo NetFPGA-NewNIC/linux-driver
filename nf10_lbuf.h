@@ -15,6 +15,7 @@
 *	 This header file is for lbuf DMA implmentation.
 *
 *	 This code is initially developed for the Network-as-a-Service (NaaS) project.
+*	 (under development in https://github.com/NetFPGA-NewNIC/linux-driver)
 *        
 *
 *  Copyright notice:
