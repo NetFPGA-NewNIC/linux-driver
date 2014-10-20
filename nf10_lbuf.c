@@ -500,7 +500,7 @@ static int deliver_packets(struct nf10_adapter *adapter, void *buf_addr,
 			goto next_pkt;
 
 		START_TIMESTAMP(0);
-		if ((skb = netdev_alloc_skb(netdev, pkt_len)) == NULL) {
+		if ((skb = netdev_alloc_skb_ip_align(netdev, pkt_len)) == NULL) {
 			netif_err(adapter, rx_err, netdev,
 				  "rx_cons=%d failed to alloc skb", rx_cons());
 			goto next_pkt;
