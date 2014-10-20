@@ -30,6 +30,7 @@
 *		irq enable/disable can be done in NAPI-related parts.
 *
 *	 This code is initially developed for the Network-as-a-Service (NaaS) project.
+*	 (under development in https://github.com/NetFPGA-NewNIC/linux-driver)
 *        
 *
 *  Copyright notice:
