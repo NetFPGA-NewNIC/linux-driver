@@ -59,7 +59,6 @@
 #include "nf10_lbuf.h"
 #include "nf10_lbuf_api.h"
 #include "nf10_user.h"
-#include <asm/cacheflush.h>
 
 static struct kmem_cache *desc_cache;
 
