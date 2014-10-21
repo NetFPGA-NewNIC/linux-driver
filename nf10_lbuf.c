@@ -62,6 +62,9 @@
 
 static struct kmem_cache *desc_cache;
 
+#define TX_LBUF_SIZE	(128*1024)
+static struct kmem_cache *tx_lbuf_cache;
+
 struct large_buffer {
 	struct desc descs[2][NR_LBUF];	/* 0=TX and 1=RX */
 	unsigned int prod[2], cons[2];
@@ -179,6 +182,21 @@ static inline void free_lbuf(struct nf10_adapter *adapter, struct desc *desc)
 	/* TODO: if skb is not NULL, release it safely */
 }
 
+static inline void *alloc_tx_lbuf(struct desc *desc)
+{
+	desc->kern_addr = kmem_cache_alloc(tx_lbuf_cache, GFP_ATOMIC);
+	desc->size = TX_LBUF_SIZE;
+	desc->offset = 0;
+	desc->skb = NULL;
+
+	return desc->kern_addr;
+}
+
+static inline void free_tx_lbuf(struct desc *desc)
+{
+	kmem_cache_free(tx_lbuf_cache, desc->kern_addr);
+}
+
 static void unmap_and_free_lbuf(struct nf10_adapter *adapter,
 				struct desc *desc, int rx)
 {
@@ -278,7 +296,7 @@ static struct desc *get_lbuf(struct nf10_adapter *adapter)
 	struct desc *desc = alloc_desc();
 	if (unlikely(desc == NULL))
 		return NULL;
-	if (unlikely(alloc_lbuf(adapter, desc) == NULL)) {
+	if (unlikely(alloc_tx_lbuf(desc) == NULL)) {
 		free_desc(desc);
 		return NULL;
 	}
@@ -287,7 +305,7 @@ static struct desc *get_lbuf(struct nf10_adapter *adapter)
 
 static void put_lbuf(struct nf10_adapter *adapter, struct desc *desc)
 {
-	free_lbuf(adapter, desc);
+	free_tx_lbuf(desc);
 	free_desc(desc);
 }
 
@@ -451,7 +469,7 @@ static void lbuf_gc(struct nf10_adapter *adapter, struct desc *desc)
 	}
 
 	if (decoupled_buf)
-		free_lbuf(adapter, desc);
+		free_tx_lbuf(desc);
 
 	free_desc(desc);
 }
@@ -786,6 +804,15 @@ static int nf10_lbuf_init(struct nf10_adapter *adapter)
 		return -ENOMEM;
 	}
 
+	tx_lbuf_cache = kmem_cache_create("tx_lbuf",
+				       TX_LBUF_SIZE,
+				       __alignof__(TX_LBUF_SIZE),
+				       0, NULL);
+	if (tx_lbuf_cache == NULL) {
+		pr_err("failed to alloc tx_lbuf_cache\n");
+		return -ENOMEM;
+	}
+
 	spin_lock_init(&tx_lock);
 	lbuf_head_init(&tx_queue_head);
 	lbuf_head_init(&pending_gc_head);
@@ -812,6 +839,7 @@ static void nf10_lbuf_free(struct nf10_adapter *adapter)
 	local_bh_enable();
 	destroy_workqueue(tx_wq);
 	kmem_cache_destroy(desc_cache);
+	kmem_cache_destroy(tx_lbuf_cache);
 }
 
 static int nf10_lbuf_init_buffers(struct nf10_adapter *adapter)
@@ -904,10 +932,9 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 
 		/* for now with strong assumption where processing one lbuf at a time
 		 * refill a single rx buffer */
-		if (likely(!rx_desc_full())) {
-			alloc_and_map_lbuf(adapter, rx_prod_desc(), RX);
+		if (likely(!rx_desc_full() &&
+		    alloc_and_map_lbuf(adapter, rx_prod_desc(), RX) == 0))
 			nf10_lbuf_prepare_rx(adapter, (unsigned long)rx_prod());
-		}
 
 		deliver_lbuf(adapter, &desc);
 		(*work_done)++;
