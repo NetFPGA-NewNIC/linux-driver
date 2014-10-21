@@ -490,12 +490,11 @@ static bool clean_tx_pending_gc(struct nf10_adapter *adapter, u64 last_gc_addr)
 			break;
 		}
 	}
-	smp_read_barrier_depends();
 	return lbuf_queue_empty(&pending_gc_head);	/* completed */
 }
 
 /* should be called with tx_lock held */
-static void check_tx_completion(void)
+static int check_tx_completion(void)
 {
 	u32 *completion = tx_completion_kern_addr();
 	int cleaned = 0;
@@ -515,8 +514,7 @@ static void check_tx_completion(void)
 		/* update cons */
 		inc_tx_cons();
 	}
-	if (cleaned)
-		queue_work(tx_wq, &tx_work);
+	return cleaned;
 }
 
 static void enable_intr(struct nf10_adapter *adapter)
@@ -1018,11 +1016,11 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 	check_tx_completion();
 
 	if (tx_desc_full()) {
+		spin_unlock_bh(&tx_lock);
 		debug_tx_desc_full();
 #if 0	/* TODO */
 		netif_stop_queue(dev);
 #endif
-		spin_unlock_bh(&tx_lock);
 		return NETDEV_TX_BUSY;
 	}
 	debug_count = 0;
@@ -1087,15 +1085,13 @@ static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 {
 	volatile u64 *tx_last_gc_addr_ptr = get_tx_last_gc_addr();
 	dma_addr_t tx_last_gc_addr;
-	int complete;
+	int ret;
 
 	/* no gc buffer updated:
 	 * return false unless pending_gc_head is empty to keep polling */
 	rmb();
-	if (*tx_last_gc_addr_ptr == 0) {
-		smp_read_barrier_depends();
+	if (*tx_last_gc_addr_ptr == 0)
 		return lbuf_queue_empty(&pending_gc_head);
-	}
 
 	netif_dbg(adapter, drv, default_netdev(adapter),
 		"tx-irq: cpu%d gc_addr=%p\n", smp_processor_id(), (void *)(*tx_last_gc_addr_ptr));
@@ -1104,12 +1100,16 @@ static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 	 * we can avoid add and delete to-be-cleaned desc to/from gc list */
 again:
 	spin_lock_bh(&tx_lock);
-	check_tx_completion();
+	ret = check_tx_completion();
 	spin_unlock_bh(&tx_lock);
+
+	/* any tx completed and lbuf is queued, schedule worker */
+	if (ret && !lbuf_queue_empty(&tx_queue_head))
+		queue_work(tx_wq, &tx_work);
 
 	rmb();
 	tx_last_gc_addr = *tx_last_gc_addr_ptr;
-	complete = clean_tx_pending_gc(adapter, tx_last_gc_addr);
+	ret = clean_tx_pending_gc(adapter, tx_last_gc_addr);
 
 	rmb();
 	if (tx_last_gc_addr != *tx_last_gc_addr_ptr) {
@@ -1126,9 +1126,9 @@ again:
 	}
 
 	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "tx-irq: cpu%d clean complete=%d\n", smp_processor_id(), complete);
+		  "tx-irq: cpu%d clean complete=%d\n", smp_processor_id(), ret);
 
-	return complete;
+	return ret;
 }
 
 static unsigned long nf10_lbuf_ctrl_irq(struct nf10_adapter *adapter,

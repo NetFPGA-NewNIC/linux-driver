@@ -95,6 +95,7 @@ static inline void lbuf_head_init(struct lbuf_head *head)
 
 static inline int lbuf_queue_empty(struct lbuf_head *head)
 {
+	smp_read_barrier_depends();
 	return list_empty(&head->head);
 }
 
