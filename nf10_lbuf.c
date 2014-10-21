@@ -500,15 +500,14 @@ static int check_tx_completion(void)
 	int cleaned = 0;
 
 	while (tx_desc_empty() == false &&
-	       completion[tx_cons()] == TX_COMPLETION_OKAY) {
+	       ACCESS_ONCE(completion[tx_cons()]) == TX_COMPLETION_OKAY) {
 		struct desc *desc = tx_cons_desc();
 
 		add_to_pending_gc_list(desc);
 
 		/* clean */
 		clean_desc(desc);
-		completion[tx_cons()] = 0;
-		mb();
+		ACCESS_ONCE(completion[tx_cons()]) = 0;
 		cleaned = 1;
 
 		/* update cons */
@@ -1011,12 +1010,10 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 	/********/
 #endif
 
-	spin_lock_bh(&tx_lock);
-
+	spin_lock(&tx_lock);
 	check_tx_completion();
-
 	if (tx_desc_full()) {
-		spin_unlock_bh(&tx_lock);
+		spin_unlock(&tx_lock);
 		debug_tx_desc_full();
 #if 0	/* TODO */
 		netif_stop_queue(dev);
@@ -1045,8 +1042,7 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 
 	skb->prev = skb->next = skb;
 	ret = lbuf_xmit(adapter, skb->data, skb->len, skb);
-
-	spin_unlock_bh(&tx_lock);
+	spin_unlock(&tx_lock);
 
 	if (likely(ret == 0))
 		netdev->stats.tx_packets++;
