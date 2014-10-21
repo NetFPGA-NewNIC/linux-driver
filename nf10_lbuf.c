@@ -345,7 +345,9 @@ static void lbuf_queue_work(struct desc *desc)
 static int add_packet_to_lbuf(struct desc *desc, int port_num,
 		void *pkt_addr, unsigned int pkt_len, struct sk_buff *skb)
 {
+#if 0	/* costly debugging */
 	struct nf10_adapter *adapter = lbuf_hw.adapter;
+#endif
 	void *buf_addr;
 
 	buf_addr = desc->kern_addr + desc->offset;
@@ -361,7 +363,7 @@ static int add_packet_to_lbuf(struct desc *desc, int port_num,
 	if (skb)
 		add_skb_to_lbuf(desc, skb);
 
-#if 0
+#if 0	/* costly debugging */
 	netif_dbg(adapter, tx_queued, default_netdev(adapter),
 		"qpkt: cpu%d pid=%d comm=%s port_num=%d pkt_addr=%p pkt_len=%u desc->(kern_addr=%p offset=%u) skb=%p\n",
 		smp_processor_id(), current->pid, current->comm, port_num, pkt_addr, pkt_len, desc->kern_addr, desc->offset, skb);
@@ -369,7 +371,7 @@ static int add_packet_to_lbuf(struct desc *desc, int port_num,
 	return 0;
 }
 
-static int queue_tx_packet(struct nf10_adapter *adapter, int port_num,
+int queue_tx_packet(struct nf10_adapter *adapter, int port_num,
 			   struct sk_buff *skb)
 {
 	struct lbuf_head *head = &tx_queue_head;
@@ -1003,11 +1005,13 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 	unsigned int headroom, headroom_to_expand;
 	int ret;
 
+#if 0	/* skb batching test code */
 	/* TEST */
 	queue_tx_packet(adapter, netdev_port_num(netdev), skb);
 	netdev->stats.tx_packets++;
 	return NETDEV_TX_OK;
 	/********/
+#endif
 
 	spin_lock_bh(&tx_lock);
 
@@ -1077,25 +1081,6 @@ static void lbuf_tx_worker(struct work_struct *work)
 		if (cont)
 			free_desc(desc);
 	}
-#if 0
-	while ((desc = lbuf_dequeue(&tx_queue_head))) {
-		spin_lock_bh(&tx_lock);
-		check_tx_completion();
-		if (tx_desc_full()) {
-			spin_unlock_bh(&tx_lock);
-			lbuf_queue_head(&tx_queue_head, desc);
-			break;
-		}
-		if (unlikely(desc->offset == 0)) {
-			spin_unlock_bh(&tx_lock);
-			free_desc(desc);
-			continue;
-		}
-		lbuf_xmit(adapter, desc->kern_addr, desc->offset, desc->skb);
-		spin_unlock_bh(&tx_lock);
-		free_desc(desc);
-	}
-#endif
 }
 
 static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
