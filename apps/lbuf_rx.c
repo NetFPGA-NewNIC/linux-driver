@@ -100,7 +100,6 @@ int main(int argc, char *argv[])
 	int dword_idx, max_dword_idx;
 	int port_num;
 	uint32_t pkt_len;
-	uint8_t bytes_remainder;
 	uint32_t rx_packets;
 
 	if ((fd = open(DEV_FNAME, O_RDWR, 0755)) < 0) {
