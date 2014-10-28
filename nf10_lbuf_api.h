@@ -53,6 +53,12 @@
 #define inc_pointer(pointer)	\
 	do { pointer = pointer == NR_LBUF - 1 ? 0 : pointer + 1; } while(0)
 
+/* in-flight TX buffer for user space, by default set to 2 * NR_LBUF
+ * to fill the gap between descriptor availablity and buffer release time */
+#define NR_TX_USER_LBUF	(NR_LBUF << 1)
+#define inc_txbuf_ref(ref)	\
+	do { ref = ref == NR_TX_USER_LBUF - 1 ? 0 : ref + 1; } while(0)
+
 #ifndef PAGE_SHIFT
 #define PAGE_SHIFT	12
 #endif
@@ -60,11 +66,21 @@
 #define LBUF_SIZE	(1UL << (PAGE_SHIFT + LBUF_ORDER))
 #define LBUF_NR_PORTS	4	/* only used for sanity check: should be the same as # of physical ports */
 
+#ifndef ACCESS_ONCE
+#define ACCESS_ONCE(x)	(*(volatile typeof(x) *)&(x))
+#endif
+#define UINT_GET(p, i)		(((unsigned int *)p)[i])
+#define UINT_GET_ONCE(p, i)	ACCESS_ONCE((((unsigned int *)p)[i]))
+
+#ifndef ALIGN
+#define ALIGN(x, a)	(((x) + (typeof(x))(a-1)) & ~(typeof(x))(a-1))
+#endif
+
 #define NR_RESERVED_DWORDS		32
 /* 1st dword is # of qwords, so # of dwords includes it plus reserved area */
-#define LBUF_NR_DWORDS(buf_addr)	((((unsigned int *)buf_addr)[0] << 1) + NR_RESERVED_DWORDS)
+#define LBUF_NR_DWORDS(buf_addr)	((UINT_GET_ONCE(buf_addr, 0) << 1) + NR_RESERVED_DWORDS)
 #define LBUF_FIRST_DWORD_IDX()		NR_RESERVED_DWORDS
-#define LBUF_INVALIDATE(buf_addr)	do { ((unsigned int *)buf_addr)[0] = 0; } while(0)
+#define LBUF_INVALIDATE(buf_addr)	do { UINT_GET_ONCE(buf_addr, 0) = 0; } while(0)
 
 /* Rx
  * in each packet, 1st dword	  = packet metadata (upper 16bit = port num encoded)
@@ -73,28 +89,33 @@
  *		   5th dword~	  = packet payload
  *		   pad = keeping qword-aligned
  */
-#define LBUF_PKT_METADATA(buf_addr, dword_idx)	((unsigned int *)buf_addr)[dword_idx]
-#define LBUF_PKT_LEN(buf_addr, dword_idx)	((unsigned int *)buf_addr)[dword_idx+1]
+#define LBUF_PKT_METADATA(buf_addr, dword_idx)	UINT_GET(buf_addr, dword_idx)
+#define LBUF_PKT_LEN(buf_addr, dword_idx)	UINT_GET(buf_addr, dword_idx + 1)
 #ifdef CONFIG_NO_TIMESTAMP
 #define LBUF_TIMESTAMP(buf_addr, dword_idx)	0ULL
 #define LBUF_PKT_START_OFFSET	2
 #else
-#define LBUF_TIMESTAMP(buf_addr, dword_idx)	*(unsigned long long *)((unsigned int *)buf_addr + dword_idx + 2)
+#define LBUF_TIMESTAMP(buf_addr, dword_idx)	*(volatile unsigned long long *)((unsigned int *)buf_addr + dword_idx + 2)
 #define LBUF_PKT_START_OFFSET	4
 #endif
 #define LBUF_PKT_ADDR(buf_addr, dword_idx)	(void *)&((unsigned int *)buf_addr)[dword_idx+LBUF_PKT_START_OFFSET]
-#define LBUF_NEXT_DWORD_IDX(dword_idx, pkt_len)     (dword_idx + LBUF_PKT_START_OFFSET + (((pkt_len + 7) & ~7) >> 2))
+#define LBUF_NEXT_DWORD_IDX(dword_idx, pkt_len)     (dword_idx + LBUF_PKT_START_OFFSET + (ALIGN(pkt_len, 8) >> 2))
 
 /* Tx */
 #define LBUF_TX_METADATA_SIZE	8
-#define LBUF_SET_TX_METADATA(buf_addr, port_num, pkt_len)	\
+#define LBUF_CUR_TX_ADDR(buf_addr, port_num, pkt_len)		\
 ({								\
-	((u32 *)buf_addr)[0] = LBUF_ENCODE_PORT_NUM(port_num);	\
-	((u32 *)buf_addr)[1] = pkt_len;				\
+	((unsigned int *)buf_addr)[0] = LBUF_ENCODE_PORT_NUM(port_num);	\
+	((unsigned int *)buf_addr)[1] = pkt_len;				\
 	(void *)buf_addr + LBUF_TX_METADATA_SIZE;		\
 })
+#define LBUF_NEXT_TX_ADDR(buf_addr, pkt_len)	(void *)ALIGN(((unsigned long)buf_addr + pkt_len), 8)
 #define LBUF_HAS_TX_ROOM(buf_size, buf_offset, pkt_size)	\
 	(buf_offset + pkt_size + LBUF_TX_METADATA_SIZE <= buf_size)
+/* for user to poll if tx buffer is available, check if the first packet's pkt_len == 0.
+ * gc handler sets pkt_len to zero if tx lbuf is allocated for user rather than releasing it */
+#define LBUF_IS_TX_AVAIL(buf_addr)	(UINT_GET_ONCE(buf_addr, 1) == 0)
+#define LBUF_SET_TX_AVAIL(buf_addr)	do { UINT_GET_ONCE(buf_addr, 1) = 0; } while(0)
 
 /* check functions */
 #define LBUF_IS_VALID(nr_dwords)		(nr_dwords > NR_RESERVED_DWORDS && nr_dwords <= (LBUF_SIZE >> 2))

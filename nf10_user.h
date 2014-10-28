@@ -62,7 +62,12 @@
 #define NF10_IOCTL_CMD_PREPARE_RX	(SIOCDEVPRIVATE+4)
 #define NF10_IOCTL_CMD_WAIT_INTR	(SIOCDEVPRIVATE+5)
 /* Tx */
-#define NF10_IOCTL_CMD_PKT_GEN		(SIOCDEVPRIVATE+20)
+#define NF10_IOCTL_CMD_XMIT		(SIOCDEVPRIVATE+20)
+#define NF10_IOCTL_CMD_PKT_GEN		(SIOCDEVPRIVATE+21)
+
+#define XMIT_SHIFT			28	/* FIXME: more generic macro */
+#define XMIT_MASK			((1 << XMIT_SHIFT) - 1)
+#define NF10_IOCTL_ARG_XMIT(ref, len)	((ref << XMIT_SHIFT) | (len & XMIT_MASK))
 
 struct pkt_gen_info {
 	unsigned int pkt_len;
@@ -72,6 +77,10 @@ struct pkt_gen_info {
 
 #ifdef __KERNEL__
 #include "nf10.h"
+
+#define XMIT_LEN(arg)			(arg & XMIT_MASK)
+#define XMIT_REF(arg)			(arg >> XMIT_SHIFT)
+
 extern int nf10_init_fops(struct nf10_adapter *adapter);
 extern int nf10_remove_fops(struct nf10_adapter *adapter);
 extern bool nf10_user_rx_callback(struct nf10_adapter *adapter);

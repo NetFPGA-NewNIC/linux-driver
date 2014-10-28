@@ -99,11 +99,13 @@ static int nf10_mmap(struct file *f, struct vm_area_struct *vma)
 	}
 
 	size = vma->vm_end - vma->vm_start;
-	/* TODO: some arg/bound checking: 
-	 * size must be the same as kernel buffer */
 
-	pfn = adapter->user_ops->get_pfn(adapter, adapter->nr_user_mmap);
-
+	if ((pfn = adapter->user_ops->get_pfn(adapter, size)) == 0) {
+		netif_err(adapter, drv, default_netdev(adapter),
+			  "failed to get pfn (nr_user_mmap=%u)\n",
+			  adapter->nr_user_mmap);
+		return -EINVAL;
+	}
 	err = remap_pfn_range(vma, vma->vm_start, pfn, size, vma->vm_page_prot);
 
 	netif_dbg(adapter, drv, default_netdev(adapter),
@@ -177,6 +179,7 @@ static int check_axi(int ret)
 
 static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
+	int ret = 0;
 	struct nf10_adapter *adapter = (struct nf10_adapter *)f->private_data;
 
 	switch(cmd) {
@@ -251,6 +254,11 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			pr_debug("signal wakes up a user process\n");
 		break;
 	}
+	case NF10_IOCTL_CMD_XMIT:
+	{
+		ret = adapter->user_ops->start_xmit(adapter, arg);
+		break;
+	}
 	case NF10_IOCTL_CMD_PKT_GEN:
 	{
 		struct pkt_gen_info pgi;
@@ -272,7 +280,7 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	default:
 		return -EINVAL;
 	}
-	return 0;
+	return ret;
 }
 
 static int nf10_release(struct inode *n, struct file *f)

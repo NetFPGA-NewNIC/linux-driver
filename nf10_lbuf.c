@@ -62,9 +62,6 @@
 
 static struct kmem_cache *desc_cache;
 
-#define TX_LBUF_SIZE	(128*1024)
-static struct kmem_cache *tx_lbuf_cache;
-
 struct large_buffer {
 	struct desc descs[2][NR_LBUF];	/* 0=TX and 1=RX */
 	unsigned int prod[2], cons[2];
@@ -117,6 +114,20 @@ struct work_struct tx_work;
 /* garbage collection of tx buffer */
 struct lbuf_head pending_gc_head;
 #define get_tx_last_gc_addr()	(tx_completion_kern_addr() + TX_LAST_GC_ADDR_OFFSET)
+
+/* tx buffers reserved for user space */
+struct desc *tx_user_lbufs[NR_TX_USER_LBUF];
+/* to distinguish user and kernel tx buffers, reuse skb by making
+ * skb and kern_addr equal */
+#define is_user_lbuf(desc)	(desc->kern_addr == desc->skb)
+static inline void make_user_lbuf(struct desc *desc)
+{
+	desc->skb = desc->kern_addr;
+	LBUF_SET_TX_AVAIL(desc->kern_addr);
+}
+
+/* default tx buffer size for kernel space */
+#define DEFAULT_TX_LBUF_SIZE	(128*1024)
 
 static unsigned long debug_count;	/* for debug */
 
@@ -182,10 +193,11 @@ static inline void free_lbuf(struct nf10_adapter *adapter, struct desc *desc)
 	/* TODO: if skb is not NULL, release it safely */
 }
 
-static inline void *alloc_tx_lbuf(struct desc *desc)
+static inline void *alloc_tx_lbuf(struct desc *desc, unsigned long size)
 {
-	desc->kern_addr = kmem_cache_alloc(tx_lbuf_cache, GFP_ATOMIC);
-	desc->size = TX_LBUF_SIZE;
+	desc->kern_addr = kmalloc(size, GFP_ATOMIC);
+	desc->dma_addr = (dma_addr_t)0;
+	desc->size = size;
 	desc->offset = 0;
 	desc->skb = NULL;
 
@@ -194,7 +206,7 @@ static inline void *alloc_tx_lbuf(struct desc *desc)
 
 static inline void free_tx_lbuf(struct desc *desc)
 {
-	kmem_cache_free(tx_lbuf_cache, desc->kern_addr);
+	kfree(desc->kern_addr);
 }
 
 static void unmap_and_free_lbuf(struct nf10_adapter *adapter,
@@ -291,20 +303,22 @@ static struct sk_buff *del_skb_from_lbuf(struct desc *desc)
 	return skb;
 }
 
-static struct desc *get_lbuf(struct nf10_adapter *adapter)
+static struct desc *get_tx_lbuf(unsigned long size)
 {
 	struct desc *desc = alloc_desc();
 	if (unlikely(desc == NULL))
 		return NULL;
-	if (unlikely(alloc_tx_lbuf(desc) == NULL)) {
+	if (unlikely(alloc_tx_lbuf(desc, size) == NULL)) {
 		free_desc(desc);
 		return NULL;
 	}
 	return desc;
 }
 
-static void put_lbuf(struct nf10_adapter *adapter, struct desc *desc)
+static void put_tx_lbuf(struct desc *desc)
 {
+	if (unlikely(desc == NULL))
+		return;
 	free_tx_lbuf(desc);
 	free_desc(desc);
 }
@@ -356,10 +370,10 @@ static int add_packet_to_lbuf(struct desc *desc, int port_num,
 		return -EINVAL;
 	}
 
-	buf_addr = LBUF_SET_TX_METADATA(buf_addr, port_num, pkt_len);
+	buf_addr = LBUF_CUR_TX_ADDR(buf_addr, port_num, pkt_len);
 	memcpy(buf_addr, pkt_addr, pkt_len);
-	desc->offset += (LBUF_TX_METADATA_SIZE + pkt_len);
-	desc->offset = ALIGN(desc->offset, 8 /* qword */);
+	buf_addr = LBUF_NEXT_TX_ADDR(buf_addr, pkt_len);
+	desc->offset = buf_addr - desc->kern_addr;
 	if (skb)
 		add_skb_to_lbuf(desc, skb);
 
@@ -395,13 +409,13 @@ int queue_tx_packet(struct nf10_adapter *adapter, int port_num,
 	spin_unlock(&head->lock);
 
 	/* now need to allocate a new lbuf to push the packet */
-	if ((desc = get_lbuf(adapter)) == NULL)
+	if ((desc = get_tx_lbuf(DEFAULT_TX_LBUF_SIZE)) == NULL)
 		return -ENOMEM;
 	ret = add_packet_to_lbuf(desc, port_num, pkt_addr, pkt_len, skb);
 	if (likely(ret == 0))
 		lbuf_queue_tail(head, desc);
 	else
-		put_lbuf(adapter, desc);
+		put_tx_lbuf(desc);
 out:
 	/* if the packet is queued, schedule lbuf_tx_worker */
 	if (likely(ret == 0))
@@ -432,6 +446,7 @@ static int add_to_pending_gc_list(struct desc *desc)
 {
 	struct desc *pdesc;
 
+	/* TODO: will remove alloc_desc for performance */
 	if ((pdesc = alloc_desc()) == NULL) {
 		pr_err("Error: failed to alloc pdesc causing memory leak\n");
 		return -ENOMEM;
@@ -457,10 +472,19 @@ static void lbuf_gc(struct nf10_adapter *adapter, struct desc *desc)
 	 * otherwise, desc->skb->data is directly on tx descriptor w/o lbuf */
 	decoupled_buf = !desc->skb || desc->skb->data != desc->kern_addr;
 	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "gctx: addr=%p skb=%p decoupled_buf=%d\n", (void *)desc->dma_addr, desc->skb, decoupled_buf);
+		  "gctx: dma_addr/kern_addr=%p/%p skb=%p decoupled_buf=%d user_buf=%d\n",
+		  (void *)desc->dma_addr, desc->kern_addr, desc->skb, decoupled_buf, is_user_lbuf(desc));
 
 	pci_unmap_single(adapter->pdev, desc->dma_addr, desc->offset,
 			 PCI_DMA_TODEVICE);
+
+	if (is_user_lbuf(desc)) {
+		/* this tells a user process that the buffer is available
+		 * for tx again, maybe user is polling this value */
+		LBUF_SET_TX_AVAIL(desc->kern_addr);
+		smp_wmb();
+		return;
+	}
 
 	while ((skb = del_skb_from_lbuf(desc))) {
 #if 0
@@ -737,16 +761,93 @@ static u64 nf10_lbuf_user_init(struct nf10_adapter *adapter)
 	return rx_cons();
 }
 
-static unsigned long nf10_lbuf_get_pfn(struct nf10_adapter *adapter,
-				       unsigned long arg)
+static unsigned long get_tx_user_lbuf(int idx, unsigned long size)
 {
-	/* FIXME: currently, test first for rx, fetch pfn from rx first */
-	int rx	= ((int)(arg / NR_LBUF) & 0x1) ^ 0x1;
-	int idx	= (int)(arg % NR_LBUF);
+	struct desc *desc;
+
+	if (unlikely(idx >= NR_TX_USER_LBUF)) {
+		pr_err("%s: idx(=%d) >= %d\n", __func__, idx, NR_TX_USER_LBUF);
+		return 0;
+	}
+
+	desc = tx_user_lbufs[idx];
+	/* reuse tx buffer if existing lbuf >= requested size */
+	if (!desc || desc->size < size) {
+		put_tx_lbuf(desc);
+		if ((desc = get_tx_lbuf(size)) == NULL) {
+			pr_err("%s: failed to allocate tx_user_lbufs[%d]\n",
+			       __func__, idx);
+			return 0;
+		}
+		tx_user_lbufs[idx] = desc;
+	}
+	make_user_lbuf(desc);
+	smp_wmb();
+
+	return virt_to_phys(desc->kern_addr) >> PAGE_SHIFT;
+}
+
+static void put_tx_user_lbuf(int idx)
+{
+	if (idx >= NR_TX_USER_LBUF || !tx_user_lbufs[idx])
+		return;
+	put_tx_lbuf(tx_user_lbufs[idx]);
+	tx_user_lbufs[idx] = NULL;
+}
+
+static void free_tx_user_buffers(void)
+{
+	int i;
+	for (i = 0; i < NR_TX_USER_LBUF; i++)
+		put_tx_user_lbuf(i);
+}
+
+static unsigned long nf10_lbuf_get_pfn(struct nf10_adapter *adapter,
+				       unsigned long size)
+{
+	int rx	= adapter->nr_user_mmap < NR_LBUF;
+	int idx = rx ? adapter->nr_user_mmap % NR_LBUF :
+		       adapter->nr_user_mmap - NR_LBUF;
+	unsigned long pfn = rx ? get_desc(rx, idx)->dma_addr >> PAGE_SHIFT :
+				 get_tx_user_lbuf(idx, size);
+
+	/* sanity check for rx */
+	if (rx && size > LBUF_SIZE)
+		pfn = 0;	/* error */
 
 	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "%s: rx=%d, idx=%d, arg=%lu\n", __func__, rx, idx, arg);
-	return get_desc(rx, idx)->dma_addr >> PAGE_SHIFT;
+		  "%s: rx=%d, idx=%d, pfn=%lx size=%lu\n", __func__,
+		  rx, idx, pfn, size);
+
+	return pfn;
+}
+
+static int nf10_lbuf_user_xmit(struct nf10_adapter *adapter, unsigned long arg)
+{
+	struct desc *desc;
+	u32 ref = XMIT_REF(arg);
+	u32 len = XMIT_LEN(arg);
+
+	netif_dbg(adapter, drv, default_netdev(adapter),
+		  "user_xmit: ref=%u len=%u arg=%lx\n", ref, len, arg);
+	if (unlikely(ref >= NR_TX_USER_LBUF)) {
+		pr_err("%s: Error invalid ref %u >= %d\n",
+		       __func__, ref, NR_TX_USER_LBUF);
+		return -EINVAL;
+	}
+	desc = tx_user_lbufs[ref];
+	if (unlikely(desc == NULL)) {
+		pr_err("%s: Error tx_user_lbufs[%d] is NULL\n", __func__, ref);
+		return -EINVAL;
+	}
+	if (unlikely(len == 0 || len > desc->size)) {
+		pr_err("%s: Error invalid len %u (0 or > %d)\n",
+		       __func__, len, desc->size);
+		return -EINVAL;
+	}
+	desc->offset = len;
+	lbuf_queue_work(desc);
+	return 0;
 }
 
 static unsigned long nf10_lbuf_gen(struct nf10_adapter *adapter,
@@ -768,11 +869,11 @@ static unsigned long nf10_lbuf_gen(struct nf10_adapter *adapter,
 		    !LBUF_HAS_TX_ROOM(desc->size, desc->offset, pkt_len)) {
 			if (desc)	/* send previous filled lbuf */
 				lbuf_queue_work(desc);
-			if ((desc = get_lbuf(adapter)) == NULL)
+			if ((desc = get_tx_lbuf(DEFAULT_TX_LBUF_SIZE)) == NULL)
 				goto out;
 		}
 		if (add_packet_to_lbuf(desc, 0, pkt_addr, pkt_len, NULL) < 0) {
-			put_lbuf(adapter, desc);
+			put_tx_lbuf(desc);
 			goto out;
 		}
 	}
@@ -787,6 +888,7 @@ static struct nf10_user_ops lbuf_user_ops = {
 	.init			= nf10_lbuf_user_init,
 	.get_pfn		= nf10_lbuf_get_pfn,
 	.prepare_rx_buffer	= nf10_lbuf_prepare_rx,
+	.start_xmit		= nf10_lbuf_user_xmit,
 	.pkt_gen		= nf10_lbuf_gen,
 };
 
@@ -800,15 +902,6 @@ static int nf10_lbuf_init(struct nf10_adapter *adapter)
 				       0, NULL);
 	if (desc_cache == NULL) {
 		pr_err("failed to alloc desc_cache\n");
-		return -ENOMEM;
-	}
-
-	tx_lbuf_cache = kmem_cache_create("tx_lbuf",
-				       TX_LBUF_SIZE,
-				       __alignof__(TX_LBUF_SIZE),
-				       0, NULL);
-	if (tx_lbuf_cache == NULL) {
-		pr_err("failed to alloc tx_lbuf_cache\n");
 		return -ENOMEM;
 	}
 
@@ -838,7 +931,6 @@ static void nf10_lbuf_free(struct nf10_adapter *adapter)
 	local_bh_enable();
 	destroy_workqueue(tx_wq);
 	kmem_cache_destroy(desc_cache);
-	kmem_cache_destroy(tx_lbuf_cache);
 }
 
 static int nf10_lbuf_init_buffers(struct nf10_adapter *adapter)
@@ -865,6 +957,7 @@ static int nf10_lbuf_init_buffers(struct nf10_adapter *adapter)
 static void nf10_lbuf_free_buffers(struct nf10_adapter *adapter)
 {
 	free_tx_completion_buffer(adapter);
+	free_tx_user_buffers();
 	__nf10_lbuf_free_buffers(adapter, RX);
 }
 
@@ -1002,13 +1095,12 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 	unsigned int headroom, headroom_to_expand;
 	int ret;
 
-#if 0	/* skb batching test code */
+//#if 0	/* skb batching test code */
 	/* TEST */
 	queue_tx_packet(adapter, netdev_port_num(netdev), skb);
 	netdev->stats.tx_packets++;
 	return NETDEV_TX_OK;
-	/********/
-#endif
+//#endif
 
 	spin_lock(&tx_lock);
 	check_tx_completion();
@@ -1036,9 +1128,10 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 			 "NOTE: skb is expanded(headroom=%u->%u head=%p data=%p len=%u)",
 			 headroom, skb_headroom(skb), skb->head, skb->data, skb->len);
 	}
+	/* use skb as lbuf by pushing metadata area in skb */
 	skb_push(skb, LBUF_TX_METADATA_SIZE);
-	LBUF_SET_TX_METADATA(skb->data, netdev_port_num(netdev),
-			     skb->len - LBUF_TX_METADATA_SIZE);
+	LBUF_CUR_TX_ADDR(skb->data, netdev_port_num(netdev),
+			 skb->len - LBUF_TX_METADATA_SIZE);
 
 	skb->prev = skb->next = skb;
 	ret = lbuf_xmit(adapter, skb->data, skb->len, skb);
@@ -1072,7 +1165,8 @@ static void lbuf_tx_worker(struct work_struct *work)
 			lbuf_xmit(adapter, desc->kern_addr, desc->offset, desc->skb);
 		spin_unlock_bh(&tx_lock);
 
-		if (cont)
+		/* desc for user space is reused */
+		if (cont && !is_user_lbuf(desc))
 			free_desc(desc);
 	}
 }

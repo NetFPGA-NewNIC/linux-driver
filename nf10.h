@@ -108,7 +108,8 @@ struct nf10_user_ops {
 	u64		(*init)(struct nf10_adapter *adapter);
 	unsigned long	(*get_pfn)(struct nf10_adapter *adapter, unsigned long arg);
 	void		(*prepare_rx_buffer)(struct nf10_adapter *adapter,
-					     unsigned long arg);
+					     unsigned long size);
+	int		(*start_xmit)(struct nf10_adapter *adapter, unsigned long arg);
 	unsigned long	(*pkt_gen)(struct nf10_adapter *adapter, unsigned int pkt_len,
 				   unsigned long pkt_count, int batch);
 };
