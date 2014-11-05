@@ -99,17 +99,11 @@ static uint16_t checksum(const void *data, uint16_t len, uint32_t sum)
         const uint8_t *addr = data;
 	uint32_t i;
 
-        /* Checksum all the pairs of bytes first... */
         for (i = 0; i < (len & ~1U); i += 2) {
                 sum += (uint16_t)ntohs(*((uint16_t *)(addr + i)));
                 if (sum > 0xFFFF)
                         sum -= 0xFFFF;
         }
-	/*
-	 * If there's a single byte left over, checksum it, too.
-	 * Network byte order is big-endian, so the remaining byte is
-	 * the high byte.
-	 */
 	if (i < len) {
 		sum += addr[i] << 8;
 		if (sum > 0xFFFF)
@@ -176,8 +170,8 @@ int main(int argc, char *argv[])
 	struct packet_info pinfo = {
 		"11.0.0.1",
 		"12.0.0.1",
-		"64:d1:0d:53:0f:00",
-		"00:1b:21:af:61:65",
+		"00:00:00:00:00:00",
+		"ff:ff:ff:ff:ff:ff",
 		60,		/* packet len */
 		2 << 20,	/* buflen: 2MB */
 		2 << 20,	/* batchlen: 2MB */
