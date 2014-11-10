@@ -63,7 +63,7 @@
 static struct kmem_cache *desc_cache;
 
 struct large_buffer {
-	struct desc descs[2][NR_LBUF];	/* 0=TX and 1=RX */
+	struct desc *descs[2][NR_LBUF];	/* 0=TX and 1=RX */
 	unsigned int prod[2], cons[2];
 
 	/* tx completion buffer */
@@ -94,7 +94,8 @@ static struct lbuf_hw {
 #define inc_tx_cons()	inc_cons(TX)
 #define inc_rx_cons()	inc_cons(RX)
 
-#define get_desc(rx, pointer)	(&(get_lbuf_hw()->descs[rx][pointer]))
+#define get_desc(rx, pointer)		(get_lbuf_hw()->descs[rx][pointer])
+#define set_desc(rx, pointer, desc)	do { get_lbuf_hw()->descs[rx][pointer] = desc; } while(0)
 #define prod_desc(rx)		get_desc(rx, prod(rx))
 #define cons_desc(rx)		get_desc(rx, cons(rx))
 #define tx_prod_desc()		prod_desc(TX)
@@ -209,14 +210,14 @@ static inline void free_tx_lbuf(struct desc *desc)
 	kfree(desc->kern_addr);
 }
 
-static void unmap_and_free_lbuf(struct nf10_adapter *adapter,
-				struct desc *desc, int rx)
+static void unmap_and_free_rx_lbuf(struct nf10_adapter *adapter,
+				   struct desc *desc)
 {
 	if (unlikely(desc->kern_addr == NULL))
 		return;
 #ifndef CONFIG_LBUF_COHERENT	/* explicitly unmap to/from normal pages */
 	pci_unmap_single(adapter->pdev, desc->dma_addr, LBUF_SIZE,
-			 rx ? PCI_DMA_FROMDEVICE : PCI_DMA_TODEVICE);
+			 PCI_DMA_FROMDEVICE);
 #endif
 	free_lbuf(adapter, desc);
 	netif_dbg(adapter, drv, default_netdev(adapter),
@@ -224,15 +225,15 @@ static void unmap_and_free_lbuf(struct nf10_adapter *adapter,
 		  desc->kern_addr, (void *)desc->dma_addr);
 }
 
-static int alloc_and_map_lbuf(struct nf10_adapter *adapter,
-			      struct desc *desc, int rx)
+static int alloc_and_map_rx_lbuf(struct nf10_adapter *adapter,
+				 struct desc *desc)
 {
 	if (alloc_lbuf(adapter, desc) == NULL)
 		return -ENOMEM;
 
 #ifndef CONFIG_LBUF_COHERENT	/* explicitly map to/from normal pages */
 	desc->dma_addr = pci_map_single(adapter->pdev, desc->kern_addr,
-			LBUF_SIZE, rx ? PCI_DMA_FROMDEVICE : PCI_DMA_TODEVICE);
+			LBUF_SIZE, PCI_DMA_FROMDEVICE);
 	if (pci_dma_mapping_error(adapter->pdev, desc->dma_addr)) {
 		netif_err(adapter, probe, default_netdev(adapter),
 			  "failed to map to dma addr (kern_addr=%p)\n",
@@ -429,7 +430,7 @@ static bool desc_full(int rx)
 	/* use non-null kern_addr as an indicator that distinguishes
 	 * full from empty, so make sure kern_addr sets to NULL when consumed */
 	return prod(rx) == cons(rx) &&
-	       cons_desc(rx)->kern_addr != NULL;
+	       cons_desc(rx) && cons_desc(rx)->kern_addr != NULL;
 }
 #define tx_desc_full()	desc_full(TX)
 #define rx_desc_full()	desc_full(RX)
@@ -437,26 +438,16 @@ static bool desc_full(int rx)
 static bool desc_empty(int rx)
 {
 	return prod(rx) == cons(rx) &&
-	       cons_desc(rx)->kern_addr == NULL;
+	       (cons_desc(rx) == NULL || cons_desc(rx)->kern_addr == NULL);
 }
 #define tx_desc_empty()	desc_empty(TX)
 #define rx_desc_empty()	desc_empty(RX)
 
-static int add_to_pending_gc_list(struct desc *desc)
+static void add_to_pending_gc_list(struct desc *desc)
 {
-	struct desc *pdesc;
-
-	/* TODO: will remove alloc_desc for performance */
-	if ((pdesc = alloc_desc()) == NULL) {
-		pr_err("Error: failed to alloc pdesc causing memory leak\n");
-		return -ENOMEM;
-	}
-	copy_desc(pdesc, desc);
-	lbuf_queue_tail(&pending_gc_head, pdesc);
+	lbuf_queue_tail(&pending_gc_head, desc);
 	/* for lockless emptiness check in nf10_lbuf_clean_tx_irq */
 	smp_wmb();
-
-	return 0;
 }
 
 static void lbuf_gc(struct nf10_adapter *adapter, struct desc *desc)
@@ -530,7 +521,7 @@ static int check_tx_completion(void)
 		add_to_pending_gc_list(desc);
 
 		/* clean */
-		clean_desc(desc);
+		tx_cons_desc() = NULL;
 		ACCESS_ONCE(completion[tx_cons()]) = 0;
 		cleaned = 1;
 
@@ -589,7 +580,7 @@ static void nf10_lbuf_prepare_rx(struct nf10_adapter *adapter, unsigned long idx
 	/* when changed from kernel to user packet processing mode:
 	 * this rarely happens */
 	if (unlikely(desc->kern_addr == NULL))
-		alloc_and_map_lbuf(adapter, desc, RX);
+		alloc_and_map_rx_lbuf(adapter, desc);
 
 	kern_addr = desc->kern_addr;
 	dma_addr = desc->dma_addr;
@@ -628,39 +619,51 @@ static void nf10_lbuf_prepare_rx_all(struct nf10_adapter *adapter)
 		nf10_lbuf_prepare_rx(adapter, i);
 }
 
-static int __nf10_lbuf_init_buffers(struct nf10_adapter *adapter, int rx)
+static void free_rx_lbufs(struct nf10_adapter *adapter)
 {
 	int i;
-	int err = 0;
 
 	for (i = 0; i < NR_LBUF; i++) {
-		struct desc *desc = get_desc(rx, i);
-		if ((err = alloc_and_map_lbuf(adapter, desc, rx)))
-			break;
-		netif_info(adapter, probe, default_netdev(adapter),
-			   "%s lbuf[%d] allocated at kern_addr=%p/dma_addr=%p"
-			   " (size=%lu bytes)\n", rx ? "RX" : "TX", i,
-			   desc->kern_addr, (void *)desc->dma_addr, LBUF_SIZE);
+		struct desc *desc = get_desc(RX, i);
+		if (desc) {
+			netif_info(adapter, drv, default_netdev(adapter),
+				   "RX lbuf[%d] is freed from kern_addr=%p",
+				   i, desc->kern_addr);
+			unmap_and_free_rx_lbuf(adapter, desc);
+			free_desc(desc);
+			set_desc(RX, i, NULL);
+		}
 	}
-	if (unlikely(err))	/* failed to allocate all lbufs */
-		for (i--; i >= 0; i--)
-			unmap_and_free_lbuf(adapter, get_desc(rx, i), rx);
-	else if (rx) 
-		nf10_lbuf_prepare_rx_all(adapter);
-
-	return err;
 }
 
-static void __nf10_lbuf_free_buffers(struct nf10_adapter *adapter, int rx)
+static int init_rx_lbufs(struct nf10_adapter *adapter)
 {
 	int i;
 
 	for (i = 0; i < NR_LBUF; i++) {
-		unmap_and_free_lbuf(adapter, get_desc(rx, i), rx);
-		netif_info(adapter, drv, default_netdev(adapter),
-			   "%s lbuf[%d] is freed from kern_addr=%p",
-			   rx ? "RX" : "TX", i, get_desc(rx, i)->kern_addr);
+		/* RX desc is normally allocated once and used permanently
+		 * unlike RX lbuf */
+		struct desc *desc;
+
+		BUG_ON(get_desc(RX,i));	/* ensure unused desc is NULL */
+		if (unlikely((desc = alloc_desc()) == NULL))
+			goto alloc_fail;
+		set_desc(RX, i, desc);
+
+		if (unlikely(alloc_and_map_rx_lbuf(adapter, desc)))
+			/* desc will be freed in free_rx_lbufs */
+			goto alloc_fail;
+		netif_info(adapter, probe, default_netdev(adapter),
+			   "RX lbuf[%d] allocated at kern_addr=%p/dma_addr=%p"
+			   " (size=%lu bytes)\n", i,
+			   desc->kern_addr, (void *)desc->dma_addr, LBUF_SIZE);
 	}
+	nf10_lbuf_prepare_rx_all(adapter);
+	return 0;
+
+alloc_fail:
+	free_rx_lbufs(adapter);
+	return -ENOMEM;
 }
 
 static int deliver_packets(struct nf10_adapter *adapter, void *buf_addr,
@@ -744,7 +747,7 @@ static void deliver_lbuf(struct nf10_adapter *adapter, struct desc *desc)
 		return;
 	}
 	deliver_packets(adapter, buf_addr, dword_idx, nr_dwords);
-	unmap_and_free_lbuf(adapter, desc, RX);
+	unmap_and_free_rx_lbuf(adapter, desc);
 }
 
 static u64 nf10_lbuf_user_init(struct nf10_adapter *adapter)
@@ -935,20 +938,14 @@ static void nf10_lbuf_free(struct nf10_adapter *adapter)
 
 static int nf10_lbuf_init_buffers(struct nf10_adapter *adapter)
 {
-	int i;
 	int err = 0;
-
-	/* initialize descriptors and pointers. RX descriptors are initialized
-	 * by the following __nf10_lbuf_free_buffers */
-	for (i = 0; i < NR_LBUF; i++)
-		clean_desc(get_desc(TX, i));
 
 	tx_prod() = tx_cons() = rx_prod() = rx_cons() = 0;
 
 	if ((err = init_tx_completion_buffer(adapter)))
 		return err;
 
-	if ((err = __nf10_lbuf_init_buffers(adapter, RX)))
+	if ((err = init_rx_lbufs(adapter)))
 		free_tx_completion_buffer(adapter);
 
 	return err;
@@ -958,7 +955,7 @@ static void nf10_lbuf_free_buffers(struct nf10_adapter *adapter)
 {
 	free_tx_completion_buffer(adapter);
 	free_tx_user_buffers();
-	__nf10_lbuf_free_buffers(adapter, RX);
+	free_rx_lbufs(adapter);
 }
 
 static int nf10_lbuf_napi_budget(void)
@@ -1025,7 +1022,7 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 		/* for now with strong assumption where processing one lbuf at a time
 		 * refill a single rx buffer */
 		if (likely(!rx_desc_full() &&
-		    alloc_and_map_lbuf(adapter, rx_prod_desc(), RX) == 0))
+		    alloc_and_map_rx_lbuf(adapter, rx_prod_desc()) == 0))
 			nf10_lbuf_prepare_rx(adapter, (unsigned long)rx_prod());
 
 		deliver_lbuf(adapter, &desc);
@@ -1033,34 +1030,30 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 	} while (*work_done < budget);
 }
 
-static int lbuf_xmit(struct nf10_adapter *adapter, void *buf_addr,
-		     unsigned int len, struct sk_buff *skb)
+static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
 {
 	u32 nr_qwords;
-	struct desc *desc = tx_prod_desc();
 
-	if (unlikely(!IS_ALIGNED((unsigned long)buf_addr, 4)))
-		pr_warn("WARN: buf_addr(%p) is not dword-aligned!\n", buf_addr);
+	if (unlikely(!IS_ALIGNED((unsigned long)desc->kern_addr, 4)))
+		pr_warn("WARN: lbuf(%p) dword-unaligned!\n", desc->kern_addr);
 
-	nr_qwords = ALIGN(len, 8) >> 3;
+	nr_qwords = ALIGN(desc->offset, 8) >> 3;
 
-	desc->dma_addr = pci_map_single(adapter->pdev, buf_addr, len,
-					PCI_DMA_TODEVICE);
+	desc->dma_addr = pci_map_single(adapter->pdev, desc->kern_addr,
+					desc->offset, PCI_DMA_TODEVICE);
 	if (pci_dma_mapping_error(adapter->pdev, desc->dma_addr)) {
 		netif_err(adapter, probe, default_netdev(adapter),
 			  "failed to map to dma addr (kern_addr=%p)\n",
 			  desc->kern_addr);
 		return -EIO;
 	}
-	desc->kern_addr = buf_addr;
-	desc->offset = len;
-	desc->skb = skb;
-
 	netif_dbg(adapter, tx_queued, default_netdev(adapter),
 		 "\trqtx[%u]: cpu%d desc=%p len=%u, dma_addr/kern_addr/skb=%p/%p/%p,"
 		 "nr_qwords=%u, addr=0x%x, stat=0x%x\n",
-		 tx_prod(), smp_processor_id(), desc, len, (void *)desc->dma_addr, desc->kern_addr, desc->skb,
-		 nr_qwords, tx_addr_off(tx_prod()), tx_stat_off(tx_prod()));
+		 tx_prod(), smp_processor_id(), desc, desc->offset, (void *)desc->dma_addr,
+		 desc->kern_addr, desc->skb, nr_qwords, tx_addr_off(tx_prod()), tx_stat_off(tx_prod()));
+
+	tx_prod_desc() = desc;
 
 	wmb();
 	nf10_writeq(adapter, tx_addr_off(tx_prod()), desc->dma_addr);
@@ -1071,19 +1064,64 @@ static int lbuf_xmit(struct nf10_adapter *adapter, void *buf_addr,
 	return 0;
 }
 
+static int skb_lbuf_xmit(struct net_device *netdev, struct sk_buff *skb)
+{
+	struct nf10_adapter *adapter = netdev_adapter(netdev);
+	struct desc *desc;
+	unsigned int headroom, headroom_to_expand;
+	int ret;
+
+	if ((desc = alloc_desc()) == NULL)
+		return -ENOMEM;
+
+	/* TODO: if skb is shared, must allocate separate buf
+	 * so, w/o it, pktgen is not working */
+	if (!skb_shared(skb) &&
+	    ((headroom = skb_headroom(skb)) < LBUF_TX_METADATA_SIZE ||
+	     !IS_ALIGNED((unsigned long)skb->data, 4 /* dword */))) {
+		headroom_to_expand = headroom < LBUF_TX_METADATA_SIZE ?
+			LBUF_TX_METADATA_SIZE - headroom :
+			ALIGN((unsigned long)skb->data, 4) - (unsigned long)skb->data;
+
+		pskb_expand_head(skb, headroom_to_expand, 0, GFP_ATOMIC);
+		netif_dbg(adapter, drv, default_netdev(adapter),
+				"NOTE: skb is expanded(headroom=%u->%u head=%p data=%p len=%u)",
+				headroom, skb_headroom(skb), skb->head, skb->data, skb->len);
+	}
+	/* use skb as lbuf by pushing metadata area in skb */
+	skb_push(skb, LBUF_TX_METADATA_SIZE);
+	LBUF_CUR_TX_ADDR(skb->data, netdev_port_num(netdev),
+			 skb->len - LBUF_TX_METADATA_SIZE);
+
+	/* init skb list for lbuf-linked skbs */
+	skb->prev = skb->next = skb;
+
+	/* set desc from skb metadata */
+	desc->kern_addr = skb->data;
+	desc->offset = skb->len;
+	desc->skb = skb;
+
+	spin_lock(&tx_lock);
+	ret = lbuf_xmit(adapter, desc);
+	spin_unlock(&tx_lock);
+
+	return ret;
+}
+
 static void debug_tx_desc_full(void)
 {
-	if (++debug_count >> 20) {	/* XXX: debugging */
+	struct desc *desc = tx_cons_desc();
+	if (++debug_count >> 20 && desc) {	/* XXX: debugging */
 		u32 *completion = tx_completion_kern_addr();
 		/* normally it's not warning, but at the stage of TX DMA debugging,
 		 * it could be a bug, so until any error is completely gone,
 		 * remain the this if body with the following message */
 		pr_warn("FULL [c=%u:p=%u] - desc=%p empty=%d completion=[%x:%x] dma_addr/kern_addr/skb=%p/%p/%p\n",
-				tx_cons(), tx_prod(), tx_cons_desc(), tx_desc_empty(), completion[0], completion[1],
-				(void *)tx_cons_desc()->dma_addr, tx_cons_desc()->kern_addr, tx_cons_desc()->skb);
+				tx_cons(), tx_prod(), desc, tx_desc_empty(), completion[0], completion[1],
+				(void *)desc->dma_addr, desc->kern_addr, desc->skb);
 
 		print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_NONE,
-				16, 1, tx_cons_desc()->kern_addr, 128, true);
+				16, 1, desc->kern_addr, 128, true);
 		debug_count = 0;
 	}
 }
@@ -1092,7 +1130,6 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 					struct net_device *netdev)
 {
 	struct nf10_adapter *adapter = netdev_adapter(netdev);
-	unsigned int headroom, headroom_to_expand;
 	int ret;
 
 //#if 0	/* skb batching test code */
@@ -1112,30 +1149,10 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 #endif
 		return NETDEV_TX_BUSY;
 	}
+	spin_unlock(&tx_lock);
 	debug_count = 0;
 
-	/* TODO: if skb is shared, must allocate separate buf
-	 * so, w/o it, pktgen is not working */
-	if (!skb_shared(skb) &&
-	    ((headroom = skb_headroom(skb)) < LBUF_TX_METADATA_SIZE ||
-	     !IS_ALIGNED((unsigned long)skb->data, 4 /* dword */))) {
-		headroom_to_expand = headroom < LBUF_TX_METADATA_SIZE ?
-			LBUF_TX_METADATA_SIZE - headroom :
-			ALIGN((unsigned long)skb->data, 4) - (unsigned long)skb->data;
-
-		pskb_expand_head(skb, headroom_to_expand, 0, GFP_ATOMIC);
-		netif_dbg(adapter, drv, default_netdev(adapter),
-			 "NOTE: skb is expanded(headroom=%u->%u head=%p data=%p len=%u)",
-			 headroom, skb_headroom(skb), skb->head, skb->data, skb->len);
-	}
-	/* use skb as lbuf by pushing metadata area in skb */
-	skb_push(skb, LBUF_TX_METADATA_SIZE);
-	LBUF_CUR_TX_ADDR(skb->data, netdev_port_num(netdev),
-			 skb->len - LBUF_TX_METADATA_SIZE);
-
-	skb->prev = skb->next = skb;
-	ret = lbuf_xmit(adapter, skb->data, skb->len, skb);
-	spin_unlock(&tx_lock);
+	ret = skb_lbuf_xmit(netdev, skb);
 
 	if (likely(ret == 0))
 		netdev->stats.tx_packets++;
@@ -1162,12 +1179,8 @@ static void lbuf_tx_worker(struct work_struct *work)
 			cont = false;
 		}
 		else
-			lbuf_xmit(adapter, desc->kern_addr, desc->offset, desc->skb);
+			lbuf_xmit(adapter, desc);
 		spin_unlock_bh(&tx_lock);
-
-		/* desc for user space is reused */
-		if (cont && !is_user_lbuf(desc))
-			free_desc(desc);
 	}
 }
 
