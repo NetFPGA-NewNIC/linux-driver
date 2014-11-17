@@ -56,6 +56,7 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <signal.h>
+#include <string.h>
 #include <sys/time.h>
 
 #include "nf10_lbuf_api.h"
@@ -89,6 +90,22 @@ void finish(int sig)
 	exit(0);
 }
 
+#define move_to_next_lbuf()	\
+do {	\
+	LBUF_INIT_HEADER(buf_addr);	\
+	ioctl(fd, NF10_IOCTL_CMD_PREPARE_RX, rx_cons);	\
+	inc_pointer(rx_cons);	\
+	dword_idx = NR_RESERVED_DWORDS;	\
+} while(0)
+
+#define lbuf_input()	\
+do {	\
+	memset(pkt_addr - 8, 0, ALIGN(pkt_len, 8) + 8);	\
+	total_rx_bytes += pkt_len;	\
+	total_rx_packets++;	\
+} while(0)
+
+
 int main(int argc, char *argv[])
 {
 	uint64_t ret;
@@ -96,12 +113,12 @@ int main(int argc, char *argv[])
 	int i;
 	void *buf[NR_LBUF];
 	uint32_t *buf_addr;
-	uint32_t nr_dwords;
-	int dword_idx, max_dword_idx;
+	int dword_idx = NR_RESERVED_DWORDS, next_dword_idx;
+	union lbuf_header lh;
 	int port_num;
-	uint32_t pkt_len;
-	uint8_t bytes_remainder;
-	uint32_t rx_packets;
+	uint32_t pkt_len, next_pkt_len;
+	void *pkt_addr;
+	////unsigned long poll_cnt;
 
 	if ((fd = open(DEV_FNAME, O_RDWR, 0755)) < 0) {
 		perror("open");
@@ -117,7 +134,7 @@ int main(int argc, char *argv[])
 
 	for (i = 0; i < NR_LBUF; i++) {
 		/* PROT_READ for rx only */
-		buf[i] = mmap(NULL, LBUF_SIZE, PROT_READ, MAP_PRIVATE, fd, 0);
+		buf[i] = mmap(NULL, LBUF_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 		if (buf[i] == MAP_FAILED) {
 			perror("mmap");
 			return -1;
@@ -128,6 +145,67 @@ int main(int argc, char *argv[])
 
 	signal(SIGINT, finish);
 	printf("Press Ctrl+C to finish and see # of rx packets\n");
+
+#if 0
+wait_intr:
+	/* wait interrupt: blocked */
+	ioctl(fd, NF10_IOCTL_CMD_WAIT_INTR, &ret);
+	if (rx_cons == -1)
+		rx_cons = (int32_t)ret;
+#else
+	rx_cons = 0;
+#endif
+	do {
+		buf_addr = buf[rx_cons];
+wait_to_start_recv:
+		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
+		pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
+
+		if (pkt_len == 0) {
+			/* if this lbuf is closed, move to next lbuf */
+			LBUF_GET_HEADER(buf_addr, lh);
+			if (LBUF_CLOSED(dword_idx, lh)) {
+				move_to_next_lbuf();
+				continue;
+			}
+#if 0
+			if (poll_cnt++ > LBUF_POLL_THRESH)
+				goto wait_intr;
+#endif
+			goto wait_to_start_recv;
+		}
+		if (!LBUF_IS_PKT_VALID(port_num, pkt_len)) {
+			fprintf(stderr, "Error: rx_cons=%d lbuf contains invalid pkt len=%u\n",
+				rx_cons, pkt_len);
+			break;
+		}
+		next_dword_idx = LBUF_NEXT_DWORD_IDX(dword_idx, pkt_len);
+		pkt_addr = LBUF_PKT_ADDR(buf_addr, dword_idx);
+wait_to_end_recv:
+		next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
+		if (next_pkt_len > 0) {
+			lbuf_input();
+			dword_idx = next_dword_idx;
+		}
+		else {
+			LBUF_GET_HEADER(buf_addr, lh);
+			if ((lh.nr_qwords << 1) < next_dword_idx - NR_RESERVED_DWORDS)
+				goto wait_to_end_recv;
+			lbuf_input();
+			if (LBUF_CLOSED(next_dword_idx, lh)) {
+				move_to_next_lbuf();
+				continue;
+			}
+			next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
+			if (next_pkt_len == 0)
+				next_dword_idx = LBUF_128B_ALIGN(next_dword_idx);
+			dword_idx = next_dword_idx;
+		}
+		if (dword_idx >= (LBUF_SIZE >> 2))
+			move_to_next_lbuf();
+	} while(1);
+	
+#if 0
 	do {
 
 		/* wait interrupt: blocked */
@@ -179,6 +257,7 @@ lbuf_poll_loop:
 		inc_pointer(rx_cons);
 		goto lbuf_poll_loop;
 	} while(1);
+#endif
 
 	return 0;
 }

@@ -370,10 +370,6 @@ bool nf10_user_rx_callback(struct nf10_adapter *adapter)
 				  adapter->user_private);
 			wake_up(&adapter->wq_user_intr);
 		}
-		else
-			netif_dbg(adapter, drv, default_netdev(adapter),
-				  "mmaped (=%u) but no waiting task (user_private=%lu)\n",
-				  adapter->nr_user_mmap, adapter->user_private);
 		return true;
 	}
 	return false;

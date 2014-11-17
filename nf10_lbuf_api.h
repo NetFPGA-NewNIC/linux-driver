@@ -69,8 +69,9 @@
 #ifndef ACCESS_ONCE
 #define ACCESS_ONCE(x)	(*(volatile typeof(x) *)&(x))
 #endif
-#define UINT_GET(p, i)		(((unsigned int *)p)[i])
-#define UINT_GET_ONCE(p, i)	ACCESS_ONCE((((unsigned int *)p)[i]))
+#define DWORD_GET(p, i)		(((unsigned int *)p)[i])
+#define DWORD_GET_ONCE(p, i)	ACCESS_ONCE(((unsigned int *)p)[i])
+#define QWORD_GET_ONCE(p, i)	ACCESS_ONCE(((unsigned long long *)p)[i])
 
 #ifndef ALIGN
 #define ALIGN(x, a)	(((x) + (typeof(x))(a-1)) & ~(typeof(x))(a-1))
@@ -78,9 +79,9 @@
 
 #define NR_RESERVED_DWORDS		32
 /* 1st dword is # of qwords, so # of dwords includes it plus reserved area */
-#define LBUF_NR_DWORDS(buf_addr)	((UINT_GET_ONCE(buf_addr, 0) << 1) + NR_RESERVED_DWORDS)
+#define LBUF_NR_DWORDS(buf_addr)	((DWORD_GET_ONCE(buf_addr, 0) << 1) + NR_RESERVED_DWORDS)
 #define LBUF_FIRST_DWORD_IDX()		NR_RESERVED_DWORDS
-#define LBUF_INVALIDATE(buf_addr)	do { UINT_GET_ONCE(buf_addr, 0) = 0; } while(0)
+#define LBUF_INVALIDATE(buf_addr)	do { QWORD_GET_ONCE(buf_addr, 0) = 0; } while(0)
 
 /* Rx
  * in each packet, 1st dword	  = packet metadata (upper 16bit = port num encoded)
@@ -89,8 +90,8 @@
  *		   5th dword~	  = packet payload
  *		   pad = keeping qword-aligned
  */
-#define LBUF_PKT_METADATA(buf_addr, dword_idx)	UINT_GET(buf_addr, dword_idx)
-#define LBUF_PKT_LEN(buf_addr, dword_idx)	UINT_GET(buf_addr, dword_idx + 1)
+#define LBUF_PKT_METADATA(buf_addr, dword_idx)	DWORD_GET_ONCE(buf_addr, dword_idx)
+#define LBUF_PKT_LEN(buf_addr, dword_idx)	DWORD_GET_ONCE(buf_addr, dword_idx + 1)
 #ifdef CONFIG_NO_TIMESTAMP
 #define LBUF_TIMESTAMP(buf_addr, dword_idx)	0ULL
 #define LBUF_PKT_START_OFFSET	2
@@ -114,13 +115,13 @@
 	(buf_offset + pkt_size + LBUF_TX_METADATA_SIZE <= buf_size)
 /* for user to poll if tx buffer is available, check if the first packet's pkt_len == 0.
  * gc handler sets pkt_len to zero if tx lbuf is allocated for user rather than releasing it */
-#define LBUF_IS_TX_AVAIL(buf_addr)	(UINT_GET_ONCE(buf_addr, 1) == 0)
-#define LBUF_SET_TX_AVAIL(buf_addr)	do { UINT_GET_ONCE(buf_addr, 1) = 0; } while(0)
+#define LBUF_IS_TX_AVAIL(buf_addr)	(DWORD_GET_ONCE(buf_addr, 1) == 0)
+#define LBUF_SET_TX_AVAIL(buf_addr)	do { DWORD_GET_ONCE(buf_addr, 1) = 0; } while(0)
 
 /* check functions */
 #define LBUF_IS_VALID(nr_dwords)		(nr_dwords > NR_RESERVED_DWORDS && nr_dwords <= (LBUF_SIZE >> 2))
 #define LBUF_IS_PORT_VALID(port_num)		(port_num >=0 && port_num < LBUF_NR_PORTS)
-#define LBUF_IS_PKT_VALID(port_num, pkt_len)	(LBUF_IS_PORT_VALID(port_num) && pkt_len >= 60 && pkt_len <= 1518)
+#define LBUF_IS_PKT_VALID(port_num, pkt_len)	(LBUF_IS_PORT_VALID(port_num) && pkt_len >= 60 && pkt_len <= 1514)
 
 #if defined(CONFIG_NR_PORTS) && (CONFIG_NR_PORTS == 1)
 #define LBUF_PKT_PORT_NUM(buf_addr, dword_idx)	(0)
@@ -149,3 +150,21 @@ static inline unsigned int LBUF_ENCODE_PORT_NUM(int port_num)
 		return 0;
 	return port_map[port_num];
 }
+
+union lbuf_header {
+	struct {
+		unsigned nr_qwords:32;
+		unsigned is_closed:1;
+		unsigned unused2:7;
+		unsigned nr_drops:16;
+		unsigned unused1:8;
+	};
+	unsigned long long qword;
+};
+
+#define LBUF_INIT_HEADER(buf_addr)	do { QWORD_GET_ONCE(buf_addr, 0) = 0; } while(0)
+#define LBUF_GET_HEADER(buf_addr, lh)	do { lh.qword = QWORD_GET_ONCE(buf_addr, 0); } while(0)
+#define LBUF_CLOSED(dword_idx, lh)	\
+	(lh.is_closed && (lh.nr_qwords << 1) == dword_idx - NR_RESERVED_DWORDS)
+#define LBUF_128B_ALIGN(dword_idx)	ALIGN(dword_idx, 32)
+#define LBUF_POLL_THRESH	1000000

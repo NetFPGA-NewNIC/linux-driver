@@ -87,8 +87,12 @@ struct nf10_netdev_priv {
 #define netdev_port_num(netdev)	(get_netdev_priv(netdev)->port_num)
 #define netdev_port_up(netdev)	(get_netdev_priv(netdev)->port_up)
 
-#define IRQ_CTRL_DISABLE	0
-#define IRQ_CTRL_ENABLE		1
+/* interrupt control commands used for nf10_hw_ops->ctrl_irq */
+enum {
+	IRQ_CTRL_ENABLE = 0,
+	IRQ_CTRL_DISABLE,
+	NR_IRQ_CTRL,
+};
 
 struct nf10_hw_ops {
 	int		(*init)(struct nf10_adapter *adapter);

@@ -63,8 +63,15 @@
 static struct kmem_cache *desc_cache;
 
 struct large_buffer {
-	struct desc *descs[2][NR_LBUF];	/* 0=TX and 1=RX */
-	unsigned int prod[2], cons[2];
+	struct desc *descs[TXRX][NR_LBUF];	/* 0=TX and 1=RX */
+	unsigned int prod[TXRX], cons[TXRX];
+
+	/* rx dword offset to clean (consume) in current lbuf */
+	unsigned int rx_dword_idx;
+
+	/* writeback values for tx/rx: written back to HW to let HW
+	 * know the last status seen by SW */
+	unsigned long writeback[TXRX];
 
 	/* tx completion buffer */
 	void *tx_completion_kern_addr;
@@ -102,6 +109,14 @@ static struct lbuf_hw {
 #define rx_prod_desc()		prod_desc(RX)
 #define tx_cons_desc()		cons_desc(TX)
 #define rx_cons_desc()		cons_desc(RX)
+
+#define get_rx_dword_idx()		(get_lbuf_hw()->rx_dword_idx)
+#define set_rx_dword_idx(dword_idx)	do { get_lbuf_hw()->rx_dword_idx = dword_idx; } while(0)
+
+#define get_tx_writeback()	(get_lbuf_hw()->writeback[TX])
+#define get_rx_writeback()	(get_lbuf_hw()->writeback[RX])
+#define set_tx_writeback(v)	do { get_lbuf_hw()->writeback[TX] = (unsigned long)v; } while(0)
+#define set_rx_writeback(v)	do { get_lbuf_hw()->writeback[RX] = (unsigned long)v; } while(0)
 
 #define tx_completion_kern_addr()	(get_lbuf_hw()->tx_completion_kern_addr)
 #define tx_completion_dma_addr()	(get_lbuf_hw()->tx_completion_dma_addr)
@@ -257,17 +272,6 @@ static struct desc *alloc_desc(void)
 static void free_desc(struct desc *desc)
 {
 	kmem_cache_free(desc_cache, desc);
-}
-
-static void clean_desc(struct desc *desc)
-{
-	desc->kern_addr = NULL;
-	desc->skb = NULL;
-}
-
-static void copy_desc(struct desc *to, struct desc *from)
-{
-	*to = *from;
 }
 
 static void add_skb_to_lbuf(struct desc *desc, struct sk_buff *skb)
@@ -531,11 +535,27 @@ static int check_tx_completion(void)
 	return cleaned;
 }
 
-static void enable_intr(struct nf10_adapter *adapter)
+static void enable_irq(struct nf10_adapter *adapter)
 {
-	/* FIXME: replace 0xcacabeef */
-	nf10_writel(adapter, TX_INTR_CTRL_ADDR, 0xcacabeef);
+#if 0
+	nf10_writeq(adapter, TX_WRITEBACK_REG, get_tx_writeback());
+	nf10_writeq(adapter, RX_WRITEBACK_REG, get_rx_writeback());
+	wmb();
+#endif
+	nf10_writel(adapter, IRQ_ENABLE_REG, IRQ_CTRL_VAL);
+	netif_dbg(adapter, intr, default_netdev(adapter), "enable_irq\n");
 }
+
+static void disable_irq(struct nf10_adapter *adapter)
+{
+	nf10_writel(adapter, IRQ_DISABLE_REG, IRQ_CTRL_VAL);
+	netif_dbg(adapter, intr, default_netdev(adapter), "disable_irq\n");
+}
+
+void (*irq_ctrl_handlers[NR_IRQ_CTRL])(struct nf10_adapter *adapter) = {
+	[IRQ_CTRL_ENABLE]	= enable_irq,
+	[IRQ_CTRL_DISABLE]	= disable_irq,
+};
 
 static int init_tx_completion_buffer(struct nf10_adapter *adapter)
 {
@@ -585,11 +605,6 @@ static void nf10_lbuf_prepare_rx(struct nf10_adapter *adapter, unsigned long idx
 	kern_addr = desc->kern_addr;
 	dma_addr = desc->dma_addr;
 
-	/* before sending a new lbuf to NIC, invalidate header space
-	 * by zeroing it so that it can poll the header to identify
-	 * readiness of any recieved packets in the lbuf */
-	LBUF_INVALIDATE(kern_addr);
-
 #ifndef CONFIG_LBUF_COHERENT
 	/* this function can be called from user thread via ioctl,
 	 * so this mapping should be done safely in that case */
@@ -617,6 +632,8 @@ static void nf10_lbuf_prepare_rx_all(struct nf10_adapter *adapter)
 		  "init to prepare all rx descriptors\n");
 	for (i = 0; i < NR_LBUF; i++)
 		nf10_lbuf_prepare_rx(adapter, i);
+
+	get_lbuf_hw()->rx_dword_idx = NR_RESERVED_DWORDS;	/* FIXME: by macro api */
 }
 
 static void free_rx_lbufs(struct nf10_adapter *adapter)
@@ -659,95 +676,13 @@ static int init_rx_lbufs(struct nf10_adapter *adapter)
 			   desc->kern_addr, (void *)desc->dma_addr, LBUF_SIZE);
 	}
 	nf10_lbuf_prepare_rx_all(adapter);
+
+	nf10_writel(adapter, IRQ_PERIOD_REG, 200000);	/* XXX: irq inter-arrival is 200us */
 	return 0;
 
 alloc_fail:
 	free_rx_lbufs(adapter);
 	return -ENOMEM;
-}
-
-static int deliver_packets(struct nf10_adapter *adapter, void *buf_addr,
-			   unsigned int dword_idx, unsigned int nr_dwords)
-{
-	int port_num;
-	u32 pkt_len;
-	struct net_device *netdev;
-	struct sk_buff *skb;
-	unsigned int rx_packets = 0;
-	DEFINE_TIMESTAMP(3);
-
-	do {
-		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
-		pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
-
-		if (unlikely(LBUF_IS_PKT_VALID(port_num, pkt_len) == false)) {	
-			/* for error reporting */
-			netdev = LBUF_IS_PORT_VALID(port_num) ?
-				adapter->netdev[port_num] :
-				default_netdev(adapter);
-			netif_err(adapter, rx_err, netdev,
-				  "Error: invalid packet "
-				  "(port_num=%d, len=%u at rx_cons=%d lbuf[%u])",
-				  rx_cons(), dword_idx, port_num, pkt_len);
-			goto next_pkt;
-		}
-		netdev = adapter->netdev[port_num];
-
-		/* interface is down, skip it */
-		if (netdev_port_up(netdev) == 0)
-			goto next_pkt;
-
-		START_TIMESTAMP(0);
-		if ((skb = netdev_alloc_skb_ip_align(netdev, pkt_len)) == NULL) {
-			netif_err(adapter, rx_err, netdev,
-				  "rx_cons=%d failed to alloc skb", rx_cons());
-			goto next_pkt;
-		}
-		STOP_TIMESTAMP(0);
-
-		START_TIMESTAMP(1);
-		skb_copy_to_linear_data(skb, LBUF_PKT_ADDR(buf_addr, dword_idx), 
-					pkt_len);	/* memcpy */
-		STOP_TIMESTAMP(1);
-
-		skb_put(skb, pkt_len);
-		skb->protocol = eth_type_trans(skb, netdev);
-		skb->ip_summed = CHECKSUM_NONE;
-
-		START_TIMESTAMP(2);
-		napi_gro_receive(&adapter->napi, skb);
-		STOP_TIMESTAMP(2);
-
-		rx_packets++;
-next_pkt:
-		dword_idx = LBUF_NEXT_DWORD_IDX(dword_idx, pkt_len);
-	} while(dword_idx < nr_dwords);
-
-	netdev->stats.rx_packets += rx_packets;
-
-	netif_dbg(adapter, rx_status, netdev,
-		  "RX lbuf to host nr_dwords=%u rx_packets=%u/%lu on cpu%d " 
-		  "(alloc=%llu memcpy=%llu skbpass=%llu)\n",
-		  nr_dwords, rx_packets, netdev->stats.rx_packets, smp_processor_id(),
-		  ELAPSED_CYCLES(0), ELAPSED_CYCLES(1), ELAPSED_CYCLES(2));
-
-	return 0;
-}
-
-static void deliver_lbuf(struct nf10_adapter *adapter, struct desc *desc)
-{
-	void *buf_addr = desc->kern_addr;
-	unsigned int nr_dwords = LBUF_NR_DWORDS(buf_addr);
-	unsigned int dword_idx = LBUF_FIRST_DWORD_IDX();
-
-	if (LBUF_IS_VALID(nr_dwords) == false) {
-		netif_err(adapter, rx_err, default_netdev(adapter),
-			  "rx_cons=%d's header contains invalid # of dwords=%u",
-			  rx_cons(), nr_dwords);
-		return;
-	}
-	deliver_packets(adapter, buf_addr, dword_idx, nr_dwords);
-	unmap_and_free_rx_lbuf(adapter, desc);
 }
 
 static u64 nf10_lbuf_user_init(struct nf10_adapter *adapter)
@@ -960,12 +895,10 @@ static void nf10_lbuf_free_buffers(struct nf10_adapter *adapter)
 
 static int nf10_lbuf_napi_budget(void)
 {
-	/* XXX: napi budget as # of large buffers, instead of # of packets.
-	 * set 1 as a minimum budget. It will be changed to packet-based budget
-	 * when per-packet delivery is implemented in DMA */ 
-	return 1;
+	return 64;
 }
 
+#if 0	/* rx revision */
 static int consume_rx_desc(struct nf10_adapter *adapter, struct desc *desc)
 {
 	if (rx_desc_empty())
@@ -1028,6 +961,167 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 		deliver_lbuf(adapter, &desc);
 		(*work_done)++;
 	} while (*work_done < budget);
+}
+#endif
+
+static void move_to_next_lbuf(struct nf10_adapter *adapter)
+{
+	//memset(rx_cons_desc()->kern_addr, 0, rx_cons_desc()->size);
+	LBUF_INIT_HEADER(rx_cons_desc()->kern_addr);
+	wmb();
+	nf10_lbuf_prepare_rx(adapter, (unsigned long)rx_cons());
+	set_rx_dword_idx(NR_RESERVED_DWORDS);
+	inc_rx_cons();
+
+	netif_dbg(adapter, rx_status, default_netdev(adapter),
+		  "%s: rx_cons=%u\n", __func__, rx_cons());
+}
+
+static void deliver_packet(struct net_device *netdev, void *pkt_addr,
+		unsigned int pkt_len, struct sk_buff **pskb, int *work_done)
+{
+	struct nf10_adapter *adapter = netdev_adapter(netdev);
+	struct sk_buff *skb = *pskb;
+
+	/* interface is down, skip it */
+	if (unlikely(netdev_port_up(netdev) == 0))
+		return;
+
+	//pr_debug("dps: %p l=%u wd=%d\n", pkt_addr, pkt_len, *work_done);
+
+	skb_copy_to_linear_data(skb, pkt_addr, pkt_len);
+	memset(pkt_addr - 8, 0, ALIGN(pkt_len, 8) + 8);
+	skb_put(skb, pkt_len);
+	skb->protocol = eth_type_trans(skb, netdev);
+	skb->ip_summed = CHECKSUM_NONE;
+
+	napi_gro_receive(&adapter->napi, skb);
+
+	netdev->stats.rx_packets++;
+	(*work_done)++;
+	(*pskb) = NULL;
+
+	//pr_debug("dpe\n");
+}
+
+static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter, 
+				     int *work_done, int budget)
+{
+	void *buf_addr;
+	unsigned int dword_idx, next_dword_idx;
+	struct sk_buff *skb;
+	int port_num;
+	void *pkt_addr;
+	unsigned int pkt_len, next_pkt_len;
+	struct net_device *netdev;
+	unsigned long poll_cnt;
+	union lbuf_header lh;
+
+	if (nf10_user_rx_callback(adapter)) {
+		*work_done = budget;
+		return;
+	}
+
+	do {
+		poll_cnt = 0;
+		skb = NULL;
+		buf_addr = rx_cons_desc()->kern_addr;
+		dword_idx = get_rx_dword_idx();
+wait_to_start_recv:
+		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
+		pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
+		//if (poll_cnt == 0)
+		//	pr_debug("pc=%lu: i=%u l=%u\n", poll_cnt, dword_idx, pkt_len);
+		if (pkt_len == 0) {
+			/* if this lbuf is closed, move to next lbuf */
+			LBUF_GET_HEADER(buf_addr, lh);
+			if (LBUF_CLOSED(dword_idx, lh)) {
+				//pr_err("1-drop: h=0x%016llx 0x%04x %u\n", lh.qword, lh.nr_drops, lh.nr_drops);
+				move_to_next_lbuf(adapter);
+				continue;
+			}
+			/* Now, current packet doesn't start being received.
+			   if polling enough, stop polling */
+			if (*work_done > 0 || poll_cnt++ > LBUF_POLL_THRESH) {
+				netif_dbg(adapter, rx_status, default_netdev(adapter),
+					  "out of poll: wd=%d drop=%u",
+					  *work_done, lh.nr_drops);
+				break;
+			}
+			goto wait_to_start_recv;	/* continue polling */
+		}
+		/* bug if packet len is invalid */
+		if (unlikely(!LBUF_IS_PKT_VALID(port_num, pkt_len))) {
+			netdev = LBUF_IS_PORT_VALID(port_num) ?
+				adapter->netdev[port_num] :
+				default_netdev(adapter);
+			netif_err(adapter, rx_err, netdev,
+				  "Error: invalid packet "
+				  "(port_num=%d, len=%u at rx_cons=%d lbuf[%u])",
+				  rx_cons(), dword_idx, port_num, pkt_len);
+			printk("-prev packet --------------------------------\n");
+			print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_NONE, 16, 1,
+				       (u32 *)buf_addr + (dword_idx - 18), 72, true);
+			printk("-this packet --------------------------------\n");
+			print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_NONE, 16, 1,
+				       (u32 *)buf_addr + dword_idx, 72, true);
+			break;
+		}
+		/* Now, pkt_len > 0,
+		 * meaning the current packet starts being received */
+		netdev = adapter->netdev[port_num];
+		if (unlikely(!skb)) { /* skb becomes NULL if delieved */
+			skb = netdev_alloc_skb_ip_align(netdev, pkt_len);
+			if (unlikely(!skb)) {
+				netif_err(adapter, rx_err, netdev,
+					"failed to alloc skb (l=%u)", pkt_len);
+				break;
+			}
+		}
+		pkt_addr = LBUF_PKT_ADDR(buf_addr, dword_idx);
+		next_dword_idx = LBUF_NEXT_DWORD_IDX(dword_idx, pkt_len);
+wait_to_end_recv:
+		next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
+		//pr_debug("ptc: nl=%u ni=%u pc=%lu\n", next_pkt_len, next_dword_idx, poll_cnt);
+		if (next_pkt_len > 0) {
+			/* if entire packet has been received, consume it */
+			deliver_packet(netdev, pkt_addr, pkt_len,
+				       &skb, work_done);
+			set_rx_dword_idx(next_dword_idx);
+		}
+		else {	/* next_pkt_len == 0 */
+			LBUF_GET_HEADER(buf_addr, lh);
+			/* still waiting for the packet to be received,
+			 * continue polling on next_pkt_len */
+			if ((lh.nr_qwords << 1) < next_dword_idx - NR_RESERVED_DWORDS)
+				goto wait_to_end_recv;
+
+			/* if nr_dwords >= next_dword_idx,
+			 * the entire packet is received, consume it */
+			deliver_packet(netdev, pkt_addr, pkt_len,
+				       &skb, work_done);
+
+			/* check if the lbuf is closed */
+			if (LBUF_CLOSED(next_dword_idx, lh)) {
+				move_to_next_lbuf(adapter);
+				continue;
+			}
+			/* timeout has occured, but don't know which packet is
+			 * associated with the timeout, so check next_pkt_len
+			 * again to see if it's zero. If so, hw has jumped to
+			 * next 128B-aligned offset */
+			next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
+			if (next_pkt_len == 0)
+				next_dword_idx = LBUF_128B_ALIGN(next_dword_idx);
+			set_rx_dword_idx(next_dword_idx);
+			//pr_debug("tout: %u->%u\n", next_dword_idx, get_rx_dword_idx());
+		}
+		/* check if next_dword_idx exceeds lbuf */
+		if (get_rx_dword_idx() >= (rx_cons_desc()->size >> 2))
+			move_to_next_lbuf(adapter);
+	} while(*work_done < budget);
+
+	set_rx_writeback(&DWORD_GET(buf_addr, dword_idx));
 }
 
 static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
@@ -1129,15 +1223,14 @@ static void debug_tx_desc_full(void)
 static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 					struct net_device *netdev)
 {
-	struct nf10_adapter *adapter = netdev_adapter(netdev);
 	int ret;
-
-//#if 0	/* skb batching test code */
+#if 0	/* skb batching test code */
+	struct nf10_adapter *adapter = netdev_adapter(netdev);
 	/* TEST */
 	queue_tx_packet(adapter, netdev_port_num(netdev), skb);
 	netdev->stats.tx_packets++;
 	return NETDEV_TX_OK;
-//#endif
+#endif
 
 	spin_lock(&tx_lock);
 	check_tx_completion();
@@ -1228,6 +1321,8 @@ again:
 		goto again;
 	}
 
+	set_tx_writeback(tx_last_gc_addr);
+
 	netif_dbg(adapter, drv, default_netdev(adapter),
 		  "tx-irq: cpu%d clean complete=%d\n", smp_processor_id(), ret);
 
@@ -1237,12 +1332,10 @@ again:
 static unsigned long nf10_lbuf_ctrl_irq(struct nf10_adapter *adapter,
 					unsigned long cmd)
 {
-	if (cmd == IRQ_CTRL_ENABLE) {
-		netif_dbg(adapter, drv, default_netdev(adapter), "irq enabled\n");
-		enable_intr(adapter);
-	}
-	/* TODO: disable interrupt */
-
+	//return 0;
+	if (unlikely(cmd >= NR_IRQ_CTRL))
+		return -EINVAL;
+	irq_ctrl_handlers[cmd](adapter);
 	return 0;
 }
 

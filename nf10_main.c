@@ -165,6 +165,11 @@ static void nf10_enable_irq(struct nf10_adapter *adapter)
 	adapter->hw_ops->ctrl_irq(adapter, IRQ_CTRL_ENABLE);
 }
 
+static void nf10_disable_irq(struct nf10_adapter *adapter)
+{
+	adapter->hw_ops->ctrl_irq(adapter, IRQ_CTRL_DISABLE);
+}
+
 int nf10_poll(struct napi_struct *napi, int budget);
 static int nf10_up(struct net_device *netdev)
 {
@@ -221,9 +226,7 @@ static int nf10_down(struct net_device *netdev)
 		if (netdev_port_up(adapter->netdev[i]))
 			break;
 	if (i == CONFIG_NR_PORTS) {	/* all ifs down */
-		/* TODO: current irq control in nf10 is in a toggled way,
-		   which should be fixed in an explicit way. After then,
-		   nf10_disable_irq() is put here */
+		nf10_disable_irq(adapter);
 		napi_disable(&adapter->napi);
 		netif_napi_del(&adapter->napi);
 		nf10_free_buffers(adapter);
@@ -262,12 +265,10 @@ irqreturn_t nf10_interrupt_handler(int irq, void *data)
 
 	netif_dbg(adapter, intr, default_netdev(adapter), "IRQ delivered\n");
 
-	/* FIXME: will be removed after explicit irq control of nf10 is added */
 	if (unlikely(buffer_initialized == false))
 		return IRQ_HANDLED;
 
-	/* TODO: IRQ disable */
-	
+	nf10_disable_irq(adapter);
 	napi_schedule(&adapter->napi);
 
 	return IRQ_HANDLED;
@@ -289,8 +290,8 @@ int nf10_poll(struct napi_struct *napi, int budget)
 
 	if (work_done < budget) {
 		napi_complete(napi);
-
-		/* TODO: enable IRQ */
+		if (likely(buffer_initialized == true))
+			nf10_enable_irq(adapter);
 	}
 
 	return work_done;

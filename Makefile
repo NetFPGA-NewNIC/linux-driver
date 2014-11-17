@@ -57,6 +57,7 @@ ifeq ($(NAAS),y)
 CONFIG_PHY_INIT := y
 CONFIG_NO_TIMESTAMP := y
 CONFIG_NR_PORTS := 1
+CONFIG_LBUF_COHERENT := y
 endif
 
 ifeq ($(OSNT),y)
