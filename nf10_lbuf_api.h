@@ -19,9 +19,6 @@
 *	 the kernel driver, but also in user-level apps. Whenever DMA hardware
 *	 changes its way of filling packets, this file should be modified.
 *
-*        TODO: 
-*		- API for TX
-*
 *	 This code is initially developed for the Network-as-a-Service (NaaS) project.
 *	 (under development in https://github.com/NetFPGA-NewNIC/linux-driver)
 *        
@@ -76,6 +73,26 @@
 #ifndef ALIGN
 #define ALIGN(x, a)	(((x) + (typeof(x))(a-1)) & ~(typeof(x))(a-1))
 #endif
+
+/*
+ * lbuf dma metadata
+ */
+enum {
+	TX = 0,
+	RX = 1,
+	TXRX,
+};
+struct large_buffer_user {
+	unsigned int prod[TXRX], cons[TXRX];
+
+	/* rx dword offset to clean (consume) in current lbuf */
+	unsigned int rx_dword_idx;
+
+	/* writeback values for tx/rx: written back to HW to let HW
+	 * know the last status seen by SW */
+	unsigned long writeback[TXRX];
+
+};
 
 #define NR_RESERVED_DWORDS		32
 /* 1st dword is # of qwords, so # of dwords includes it plus reserved area */
@@ -167,4 +184,4 @@ union lbuf_header {
 #define LBUF_CLOSED(dword_idx, lh)	\
 	(lh.is_closed && (lh.nr_qwords << 1) == dword_idx - NR_RESERVED_DWORDS)
 #define LBUF_128B_ALIGN(dword_idx)	ALIGN(dword_idx, 32)
-#define LBUF_POLL_THRESH	1000000
+#define LBUF_POLL_THRESH	10000

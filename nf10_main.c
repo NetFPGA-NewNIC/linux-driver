@@ -268,8 +268,10 @@ irqreturn_t nf10_interrupt_handler(int irq, void *data)
 	if (unlikely(buffer_initialized == false))
 		return IRQ_HANDLED;
 
-	nf10_disable_irq(adapter);
-	napi_schedule(&adapter->napi);
+	if (napi_schedule_prep(&adapter->napi)) {
+		nf10_disable_irq(adapter);
+		__napi_schedule(&adapter->napi);
+	}
 
 	return IRQ_HANDLED;
 }

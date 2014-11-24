@@ -111,6 +111,7 @@ int main(int argc, char *argv[])
 	uint64_t ret;
 	int32_t rx_cons = -1;
 	int i;
+	struct large_buffer_user *lbuf_desc;
 	void *buf[NR_LBUF];
 	uint32_t *buf_addr;
 	int dword_idx = NR_RESERVED_DWORDS, next_dword_idx;
@@ -131,6 +132,17 @@ int main(int argc, char *argv[])
 	}
 
 	debug("initialized for direct user access\n");
+
+	lbuf_desc = mmap(NULL, 1 << PAGE_SHIFT, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (lbuf_desc == MAP_FAILED) {
+		perror("mmap");
+		return -1;
+	}
+	debug("DMA metadata is mmaped to vaddr=%p\n", lbuf_desc);
+	debug("\trx_prod=%u rx_cons=%u tx_prod=%u tx_cons=%u\n",
+	      lbuf_desc->prod[RX], lbuf_desc->cons[RX], lbuf_desc->prod[TX], lbuf_desc->cons[TX]);
+	debug("\trx_dword_idx=%u\n", lbuf_desc->rx_dword_idx);
+	debug("\trx_writeback=%lx tx_writeback=%lx\n", lbuf_desc->writeback[RX], lbuf_desc->writeback[TX]);
 
 	for (i = 0; i < NR_LBUF; i++) {
 		/* PROT_READ for rx only */
@@ -204,60 +216,5 @@ wait_to_end_recv:
 		if (dword_idx >= (LBUF_SIZE >> 2))
 			move_to_next_lbuf();
 	} while(1);
-	
-#if 0
-	do {
-
-		/* wait interrupt: blocked */
-		ioctl(fd, NF10_IOCTL_CMD_WAIT_INTR, &ret);
-		if (rx_cons == -1)
-			rx_cons = (int32_t)ret;
-lbuf_poll_loop:
-		rx_packets = 0;
-
-		buf_addr = buf[rx_cons];
-		nr_dwords = LBUF_NR_DWORDS(buf_addr);
-		dword_idx = LBUF_FIRST_DWORD_IDX();
-
-		/* if lbuf is invalid, usually normal case at the end of the
-		 * lbuf loop, BUT note that it could be caused by a DMA bug */
-		if (!LBUF_IS_VALID(nr_dwords))
-			continue;
-
-		/* packet processing loop */
-		do {
-			port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
-			pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
-			/* if you want to get timestamp of a packet,
-			 * use LBUF_TIMESTAMP(buf_addr, dword_idx) */
-
-			if (LBUF_IS_PKT_VALID(port_num, pkt_len)) {
-				if (total_rx_packets == 0 && rx_packets == 0)
-					gettimeofday(&start_tv, NULL);
-				rx_packets++;
-				total_rx_bytes += pkt_len;
-			}
-			else
-				fprintf(stderr, "Error: rx_cons=%d lbuf contains invalid pkt len=%u\n",
-					rx_cons, pkt_len);
-			dword_idx = LBUF_NEXT_DWORD_IDX(dword_idx, pkt_len);
-		} while(dword_idx < nr_dwords);
-
-		gettimeofday(&end_tv, NULL);
-
-		/* send this lbuf back to the board, and proceed the pointer */
-		ioctl(fd, NF10_IOCTL_CMD_PREPARE_RX, rx_cons);
-
-		total_rx_packets += rx_packets;
-#if 0
-		debug("C [rx_cons=%d] nr_dwords=%u rx_packets=%u/%lu\n",
-				rx_cons, nr_dwords, rx_packets, total_rx_packets);
-#endif
-
-		inc_pointer(rx_cons);
-		goto lbuf_poll_loop;
-	} while(1);
-#endif
-
 	return 0;
 }

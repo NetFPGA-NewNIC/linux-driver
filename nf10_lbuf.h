@@ -47,12 +47,6 @@
 #include <linux/list.h>
 #include "nf10.h"
 
-enum {
-	TX = 0,
-	RX = 1,
-	TXRX,
-};
-
 /* offset to bar2 address of the card */
 #define RX_LBUF_ADDR_BASE	0x40
 #define RX_LBUF_STAT_BASE	0x60
