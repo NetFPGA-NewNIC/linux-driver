@@ -56,7 +56,8 @@
 #define TX_COMPLETION_ADDR	0xB0
 #define TX_COMPLETION_SIZE	((NR_LBUF << 2) + 8)	/* DWORD for each desc + QWORD (last gc addr) */
 #define TX_LAST_GC_ADDR_OFFSET	(NR_LBUF << 2)		/* last gc addr following completion buffers for all descs */
-#define TX_COMPLETION_OKAY	0xcacabeef
+#define TX_AVAIL		0xcacabeef
+#define TX_USED			0		/* not HW-dependent could be any value but TX_AVAIL */
 #define IRQ_ENABLE_REG		0x20
 #define IRQ_DISABLE_REG		0x24
 #define IRQ_PERIOD_REG		0x28
@@ -75,9 +76,8 @@ extern void nf10_lbuf_set_hw_ops(struct nf10_adapter *adapter);
 struct desc {
 	void			*kern_addr;
 	dma_addr_t		dma_addr;
-	struct sk_buff		*skb;
 	u32			size;
-	u32			offset;
+	struct sk_buff_head	skbq;
 	struct list_head	list;
 };
 

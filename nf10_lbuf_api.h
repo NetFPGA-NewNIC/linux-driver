@@ -47,8 +47,8 @@
 /* lbuf version 1.0 */
 /* NR_LBUF is dependent on lbuf DMA engine */
 #define NR_LBUF		2
-#define inc_pointer(pointer)	\
-	do { pointer = pointer == NR_LBUF - 1 ? 0 : pointer + 1; } while(0)
+#define inc_idx(idx)	\
+	do { idx = idx == NR_LBUF - 1 ? 0 : idx + 1; } while(0)
 
 /* in-flight TX buffer for user space, by default set to 2 * NR_LBUF
  * to fill the gap between descriptor availablity and buffer release time */
@@ -59,8 +59,12 @@
 #ifndef PAGE_SHIFT
 #define PAGE_SHIFT	12
 #endif
-#define LBUF_ORDER	9
-#define LBUF_SIZE	(1UL << (PAGE_SHIFT + LBUF_ORDER))
+#define ORDER_TO_SIZE(order)	(1UL << (PAGE_SHIFT + order))
+#define LBUF_RX_ORDER	9	/* default 2MB */
+#define LBUF_RX_SIZE	ORDER_TO_SIZE(LBUF_RX_ORDER)
+#define LBUF_TX_ORDER	10	/* default 4MB */
+#define LBUF_TX_SIZE	ORDER_TO_SIZE(LBUF_TX_ORDER)
+
 #define LBUF_NR_PORTS	4	/* only used for sanity check: should be the same as # of physical ports */
 
 #ifndef ACCESS_ONCE
@@ -77,20 +81,18 @@
 /*
  * lbuf dma metadata
  */
-enum {
-	TX = 0,
-	RX = 1,
-	TXRX,
-};
-struct large_buffer_user {
-	unsigned int prod[TXRX], cons[TXRX];
+struct lbuf_user {
+	unsigned int tx_idx, rx_idx;
 
 	/* rx dword offset to clean (consume) in current lbuf */
-	unsigned int rx_dword_idx;
+	unsigned int rx_cons;
+
+	/* tx prod/cons pointers */
+	unsigned int tx_prod, tx_prod_pvt, tx_cons;
 
 	/* writeback values for tx/rx: written back to HW to let HW
 	 * know the last status seen by SW */
-	unsigned long writeback[TXRX];
+	unsigned long long tx_writeback, rx_writeback;
 
 };
 
