@@ -451,7 +451,7 @@ static unsigned long nf10_lbuf_get_pfn(struct nf10_adapter *adapter,
 			
 		netif_dbg(adapter, drv, default_netdev(adapter),
 			  "%s: [%u] data page (pfn=%lx size=%lu)\n",
-			  __func__, idx, pfn, size);
+			  __func__, adapter->nr_user_mmap, pfn, size);
 	}
 	return pfn;
 }
