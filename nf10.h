@@ -51,6 +51,9 @@
 #define NF10_VENDOR_ID	0x10ee
 #define NF10_DEVICE_ID	0x4245
 
+/* user_flags */
+#define UF_USER_ON	0x1
+
 struct nf10_adapter {
 	struct napi_struct napi;
 	struct net_device *netdev[CONFIG_NR_PORTS];
@@ -69,6 +72,7 @@ struct nf10_adapter {
 	struct nf10_user_ops *user_ops;
 	unsigned long user_private;
 	struct cdev cdev;
+	u32 user_flags;
 	unsigned int nr_user_mmap;
 	wait_queue_head_t wq_user_intr;
 	/* AXI register interface */
@@ -109,7 +113,8 @@ struct nf10_hw_ops {
 };
 
 struct nf10_user_ops {
-	u64		(*init)(struct nf10_adapter *adapter);
+	unsigned long	(*init)(struct nf10_adapter *adapter, unsigned long arg);
+	unsigned long	(*exit)(struct nf10_adapter *adapter, unsigned long arg);
 	unsigned long	(*get_pfn)(struct nf10_adapter *adapter, unsigned long arg);
 	void		(*prepare_rx_buffer)(struct nf10_adapter *adapter,
 					     unsigned long size);

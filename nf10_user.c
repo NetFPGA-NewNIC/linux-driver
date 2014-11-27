@@ -94,6 +94,8 @@ static int nf10_mmap(struct file *f, struct vm_area_struct *vma)
 			  vma->vm_start, vma->vm_end);
 		return -EINVAL;
 	}
+	if (!adapter->user_ops->get_pfn)
+		return -EINVAL;
 
 	size = vma->vm_end - vma->vm_start;
 
@@ -224,13 +226,37 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	}
 	case NF10_IOCTL_CMD_INIT:
 	{
-		u64 ret;
-		ret = adapter->user_ops->init(adapter);
-		if (copy_to_user((void __user *)arg, &ret, sizeof(u64)))
-			return -EFAULT;
+		unsigned long ret = 0;
+		adapter->nr_user_mmap = 0;
+		adapter->user_flags |= UF_USER_ON;
+		if (adapter->user_ops->init) {
+			ret = adapter->user_ops->init(adapter, arg);
+			if (copy_to_user((void __user *)arg, &ret, sizeof(u64)))
+				return -EFAULT;
+		}
+		netif_dbg(adapter, drv, default_netdev(adapter),
+			  "user init: flags=%x ret=%lu\n",
+			  adapter->user_flags, ret);
+		break;
+	}
+	case NF10_IOCTL_CMD_EXIT:
+	{
+		unsigned long ret = 0;
+		adapter->nr_user_mmap = 0;
+		adapter->user_flags &= ~UF_USER_ON;
+		if (adapter->user_ops->exit) {
+			ret = adapter->user_ops->exit(adapter, arg);
+			if (copy_to_user((void __user *)arg, &ret, sizeof(u64)))
+				return -EFAULT;
+		}
+		netif_dbg(adapter, drv, default_netdev(adapter),
+			  "user exit: flags=%x ret=%lu\n",
+			  adapter->user_flags, ret);
 		break;
 	}
 	case NF10_IOCTL_CMD_PREPARE_RX:
+		if (!adapter->user_ops->prepare_rx_buffer)
+			return -EINVAL;
 		netif_dbg(adapter, drv, default_netdev(adapter),
 			  "user-driven lbuf preparation: i=%lu\n", arg);
 		adapter->user_ops->prepare_rx_buffer(adapter, arg);
@@ -340,7 +366,7 @@ bool nf10_user_rx_callback(struct nf10_adapter *adapter)
 {
 	/* if direct user access mode is enabled, just wake up
 	 * a waiting user thread */
-	if (adapter->nr_user_mmap > 0) { 
+	if (adapter->user_flags & UF_USER_ON) { 
 		if (likely(waitqueue_active(&adapter->wq_user_intr))) {
 			wmb();	/* adapter->user_private */
 

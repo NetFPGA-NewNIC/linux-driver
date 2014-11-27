@@ -64,28 +64,28 @@ static int prev_nr_drops;
 static union lbuf_header lh;
 
 unsigned long total_rx_packets, total_rx_bytes;
+
+int lbufnet_exit(void);
 static void lbufnet_finish(int sig)
 {
-	uint64_t dummy;
-
 	printf("\nReceived packets = %lu (total=%luB avg=%luB)\n",
 		total_rx_packets, total_rx_bytes, total_rx_packets ? total_rx_bytes / total_rx_packets : 0);
 	printf("Dropped packets=%u\n", lh.nr_drops - prev_nr_drops);
 
-	ioctl(fd, NF10_IOCTL_CMD_INIT, &dummy);
+	lbufnet_exit();
+
 	exit(0);
 }
 
 int lbufnet_init(void)
 {
 	int i;
-	uint64_t ret;
 
 	if ((fd = open(DEV_FNAME, O_RDWR, 0755)) < 0) {
 		perror("open");
 		return -1;
 	}
-	if (ioctl(fd, NF10_IOCTL_CMD_INIT, &ret)) {
+	if (ioctl(fd, NF10_IOCTL_CMD_INIT)) {
 		perror("ioctl init");
 		return -1;
 	}
@@ -125,6 +125,18 @@ int lbufnet_init(void)
 	initialized = 1;
 
 	signal(SIGINT, lbufnet_finish);	/* XXX: needed? or adding more signals */
+}
+
+int lbufnet_exit(void)
+{
+	if (!initialized)
+		return -1;
+
+	if (ioctl(fd, NF10_IOCTL_CMD_EXIT)) {
+		perror("ioctl init");
+		return -1;
+	}
+	return 0;
 }
 
 #define move_to_next_lbuf()	\

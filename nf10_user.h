@@ -58,15 +58,12 @@
  * Packet processing
  */
 #define NF10_IOCTL_CMD_INIT		(SIOCDEVPRIVATE+3)
+#define NF10_IOCTL_CMD_EXIT		(SIOCDEVPRIVATE+4)
 /* Rx */
-#define NF10_IOCTL_CMD_PREPARE_RX	(SIOCDEVPRIVATE+4)
-#define NF10_IOCTL_CMD_WAIT_INTR	(SIOCDEVPRIVATE+5)
+#define NF10_IOCTL_CMD_PREPARE_RX	(SIOCDEVPRIVATE+5)
+#define NF10_IOCTL_CMD_WAIT_INTR	(SIOCDEVPRIVATE+6)
 /* Tx */
 #define NF10_IOCTL_CMD_XMIT		(SIOCDEVPRIVATE+20)
-
-#define XMIT_SHIFT			28	/* FIXME: more generic macro */
-#define XMIT_MASK			((1 << XMIT_SHIFT) - 1)
-#define NF10_IOCTL_ARG_XMIT(ref, len)	((ref << XMIT_SHIFT) | (len & XMIT_MASK))
 
 #ifdef __KERNEL__
 #include "nf10.h"

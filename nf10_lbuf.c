@@ -375,16 +375,6 @@ alloc_fail:
 	return -ENOMEM;
 }
 
-static u64 nf10_lbuf_user_init(struct nf10_adapter *adapter)
-{
-	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "user request to initialize rx\n");
-
-	adapter->nr_user_mmap = 0;
-
-	return 0;
-}
-
 #if 0	/* extra_tx_buf */
 static unsigned long get_tx_user_lbuf(int idx, unsigned long size)
 {
@@ -487,7 +477,6 @@ static int nf10_lbuf_user_xmit(struct nf10_adapter *adapter, unsigned long arg)
 }
 
 static struct nf10_user_ops lbuf_user_ops = {
-	.init			= nf10_lbuf_user_init,
 	.get_pfn		= nf10_lbuf_get_pfn,
 	.prepare_rx_buffer	= nf10_lbuf_prepare_rx,
 	.start_xmit		= nf10_lbuf_user_xmit,
