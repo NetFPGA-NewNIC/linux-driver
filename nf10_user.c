@@ -20,9 +20,6 @@
 *	 time lagging behind the packet arrival rate. The kernel-user interface
 *	 is minimalistic for now.
 *
-*        TODO:
-*		- additional interface for TX
-*
 *	 This code is initially developed for the Network-as-a-Service (NaaS) project.
 *	 (under development in https://github.com/NetFPGA-NewNIC/linux-driver)
 *        
@@ -257,24 +254,6 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	case NF10_IOCTL_CMD_XMIT:
 	{
 		ret = adapter->user_ops->start_xmit(adapter, arg);
-		break;
-	}
-	case NF10_IOCTL_CMD_PKT_GEN:
-	{
-		struct pkt_gen_info pgi;
-
-		if (copy_from_user(&pgi, (void __user *)arg, sizeof(pgi))) {
-			pr_err("Error: failed to copy pkt_gen_info request\n");
-			return -EFAULT;
-		}
-
-		pgi.pkt_count = adapter->user_ops->pkt_gen(adapter,
-				pgi.pkt_len, pgi.pkt_count, pgi.batch);
-
-		if (copy_to_user((void __user *)arg, &pgi, sizeof(pgi))) {
-			pr_err("Error: failed to copy pkt_gen_info response\n");
-			return -EFAULT;
-		}
 		break;
 	}
 	default:

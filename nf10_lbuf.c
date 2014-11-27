@@ -25,11 +25,6 @@
 *	 some software overheads of copy-and-expand skb. It could be relieved by
 *	 using lbuf at TX side as well.
 *
-*	 TODO:
-*		- RX latency optimization: per-packet interrupt/polling once DMA
-*		is revised.
-*		- TX batching when available TX descriptor doesn't exist
-*
 *	 This code is initially developed for the Network-as-a-Service (NaaS) project.
 *	 (under development in https://github.com/NetFPGA-NewNIC/linux-driver)
 *
@@ -75,7 +70,6 @@ static struct lbuf_info {
 /* 
  * helper macros for prod/cons pointers and descriptors
  */
-
 #define rx_idx()		(lbuf_info.u->rx_idx)
 #define tx_idx()		(lbuf_info.u->tx_idx)
 #define inc_rx_idx()		inc_idx(rx_idx())
@@ -108,14 +102,9 @@ static struct lbuf_info {
 #define set_rx_writeback(v)	do { lbuf_info.u->rx_writeback = (unsigned long)v; } while(0)
 
 #define lbuf_cb(skb)		(*(u64 *)&((skb)->cb[32]))
+#define get_tx_last_gc_addr()	ACCESS_ONCE(*(u64 *)(lbuf_info.tx_completion_kern_addr + TX_LAST_GC_ADDR_OFFSET))
 
 spinlock_t tx_lock;
-
-struct lbuf_head tx_queue_head;
-struct workqueue_struct *tx_wq;
-struct work_struct tx_work;
-
-#define get_tx_last_gc_addr()	ACCESS_ONCE(*(u64 *)(lbuf_info.tx_completion_kern_addr + TX_LAST_GC_ADDR_OFFSET))
 
 /* tx buffer */
 struct desc *active_tx_lbuf;
@@ -503,57 +492,16 @@ static int nf10_lbuf_user_xmit(struct nf10_adapter *adapter, unsigned long arg)
 	return 0;
 }
 
-static unsigned long nf10_lbuf_gen(struct nf10_adapter *adapter,
-		unsigned int pkt_len, unsigned long pkt_count, int batch)
-{
-#if 0
-	/* FIXME: currently assume batch == 1, ignoring it */
-	struct desc *desc = NULL;
-	unsigned long xmit_count;
-	void *pkt_addr;
-
-	/* zeroed packet: manipulate its content for a specific packet */
-	if ((pkt_addr = kzalloc(pkt_len, GFP_KERNEL)) == NULL)
-		return 0;
-
-	pr_debug("%s started: pkt_len=%u pkt_count=%lu batch=%d\n",
-		 __func__, pkt_len, pkt_count, batch);
-	for (xmit_count = 0; xmit_count < pkt_count; xmit_count++) {
-		if (desc == NULL ||
-		    !LBUF_HAS_TX_ROOM(desc->size, desc->offset, pkt_len)) {
-			if (desc)	/* send previous filled lbuf */
-				lbuf_queue_work(desc);
-			if ((desc = get_tx_lbuf(DEFAULT_TX_LBUF_SIZE)) == NULL)
-				goto out;
-		}
-		if (add_packet_to_lbuf(desc, 0, pkt_addr, pkt_len, NULL) < 0) {
-			put_tx_lbuf(desc);
-			goto out;
-		}
-	}
-	if (desc)
-		lbuf_queue_work(desc);
-out:
-	kfree(pkt_addr);
-	return xmit_count;
-#endif
-	return 0;
-}
-
 static struct nf10_user_ops lbuf_user_ops = {
 	.init			= nf10_lbuf_user_init,
 	.get_pfn		= nf10_lbuf_get_pfn,
 	.prepare_rx_buffer	= nf10_lbuf_prepare_rx,
 	.start_xmit		= nf10_lbuf_user_xmit,
-	.pkt_gen		= nf10_lbuf_gen,
 };
 
 /* nf10_hw_ops functions */
-static void lbuf_tx_worker(struct work_struct *work);
 static int nf10_lbuf_init(struct nf10_adapter *adapter)
 {
-	int err = -ENOMEM;	/* default error */
-
 	/* create desc pool */
 	desc_cache = kmem_cache_create("lbuf_desc",
 				       sizeof(struct desc),
@@ -561,45 +509,26 @@ static int nf10_lbuf_init(struct nf10_adapter *adapter)
 				       0, NULL);
 	if (desc_cache == NULL) {
 		pr_err("failed to alloc desc_cache\n");
-		goto err_desc_cache;
+		return -ENOMEM;
 	}
-
 	/* init tx-related list/spinlock */
 	spin_lock_init(&tx_lock);
-	lbuf_head_init(&tx_queue_head);
-
-	/* init tx worker */
-	INIT_WORK(&tx_work, lbuf_tx_worker);
-	tx_wq = alloc_workqueue("lbuf_tx", WQ_MEM_RECLAIM, 0);
-	if (tx_wq == NULL) {
-		netif_err(adapter, rx_err, default_netdev(adapter),
-			  "failed to alloc lbuf tx workqueue\n");
-		goto err_alloc_wq;
-	}
 
 	/* init lbuf user-visiable single-page space in lbuf_hw */
 	if ((lbuf_info.u =
 	     (struct lbuf_user *)get_zeroed_page(GFP_KERNEL)) == NULL) {
 		netif_err(adapter, rx_err, default_netdev(adapter),
 			  "failed to alloc lbuf user page\n");
-		goto err_alloc_lbuf_user;
+		kmem_cache_destroy(desc_cache);
+		return -ENOMEM;
 	}
-
 	lbuf_info.adapter = adapter;
 	adapter->user_ops = &lbuf_user_ops;
 	return 0;
-
-err_alloc_lbuf_user:
-	destroy_workqueue(tx_wq);
-err_alloc_wq:
-	kmem_cache_destroy(desc_cache);
-err_desc_cache:
-	return err;
 }
 
 static void nf10_lbuf_free(struct nf10_adapter *adapter)
 {
-	destroy_workqueue(tx_wq);
 	kmem_cache_destroy(desc_cache);
 }
 
@@ -827,10 +756,10 @@ static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
 	nf10_writeq(adapter, tx_addr_off(idx), dma_addr);
 	nf10_writel(adapter, tx_stat_off(idx), nr_qwords);
 
-	netif_dbg(adapter, tx_queued, default_netdev(adapter),
-		 "\trqtx[%u]: c%d l=%u prod=[%u:%u] dma_addr=%p/skbqlen=%u qw=%u\n",
-		 idx, smp_processor_id(), prod_pvt - prod, prod, prod_pvt,
-		 (void *)dma_addr, skb_queue_len(&desc->skbq), nr_qwords);
+	netif_info(adapter, tx_queued, default_netdev(adapter),
+		   "\trqtx[%u]: c%d l=%u prod=[%u:%u] dma_addr=%p/skbqlen=%u qw=%u\n",
+		   idx, smp_processor_id(), prod_pvt - prod, prod, prod_pvt,
+		   (void *)dma_addr, skb_queue_len(&desc->skbq), nr_qwords);
 
 #if 0
 	print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_NONE,
@@ -917,32 +846,6 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 	lbuf_xmit(adapter, main_tx_lbuf);
 
 	return NETDEV_TX_OK;
-}
-
-static void lbuf_tx_worker(struct work_struct *work)
-{
-#if 0
-	struct nf10_adapter *adapter = lbuf_hw.adapter;
-	struct desc *desc;
-	bool cont = true;
-
-	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "%s scheduled on cpu%d\n", __func__, smp_processor_id());
-	while(cont) {
-		spin_lock_bh(&tx_lock);
-		desc = lbuf_dequeue(&tx_queue_head);
-		check_tx_completion();
-		if (!desc)
-			cont = false;
-		else if (tx_desc_full()) {
-			lbuf_queue_head(&tx_queue_head, desc);
-			cont = false;
-		}
-		else
-			lbuf_xmit(adapter, desc);
-		spin_unlock_bh(&tx_lock);
-	}
-#endif
 }
 
 static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
