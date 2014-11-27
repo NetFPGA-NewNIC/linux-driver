@@ -71,9 +71,6 @@
 #ifdef __KERNEL__
 #include "nf10.h"
 
-#define XMIT_LEN(arg)			(arg & XMIT_MASK)
-#define XMIT_REF(arg)			(arg >> XMIT_SHIFT)
-
 extern int nf10_init_fops(struct nf10_adapter *adapter);
 extern int nf10_remove_fops(struct nf10_adapter *adapter);
 extern bool nf10_user_rx_callback(struct nf10_adapter *adapter);

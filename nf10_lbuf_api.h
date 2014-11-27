@@ -45,14 +45,14 @@
 */
 
 /* lbuf version 1.0 */
-/* NR_LBUF is dependent on lbuf DMA engine */
-#define NR_LBUF		2
+/* NR_SLOT is dependent on lbuf DMA engine */
+#define NR_SLOT		2
 #define inc_idx(idx)	\
-	do { idx = idx == NR_LBUF - 1 ? 0 : idx + 1; } while(0)
+	do { idx = idx == NR_SLOT - 1 ? 0 : idx + 1; } while(0)
 
-/* in-flight TX buffer for user space, by default set to 2 * NR_LBUF
+/* in-flight TX buffer for user space, by default set to 2 * NR_SLOT
  * to fill the gap between descriptor availablity and buffer release time */
-#define NR_TX_USER_LBUF	(NR_LBUF << 1)
+#define NR_TX_USER_LBUF	(NR_SLOT << 1)
 #define inc_txbuf_ref(ref)	\
 	do { ref = ref == NR_TX_USER_LBUF - 1 ? 0 : ref + 1; } while(0)
 
