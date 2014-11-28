@@ -160,12 +160,12 @@ static int nf10_clean_tx_irq(struct nf10_adapter *adapter)
 	return adapter->hw_ops->clean_tx_irq(adapter);
 }
 
-static void nf10_enable_irq(struct nf10_adapter *adapter)
+void nf10_enable_irq(struct nf10_adapter *adapter)
 {
 	adapter->hw_ops->ctrl_irq(adapter, IRQ_CTRL_ENABLE);
 }
 
-static void nf10_disable_irq(struct nf10_adapter *adapter)
+void nf10_disable_irq(struct nf10_adapter *adapter)
 {
 	adapter->hw_ops->ctrl_irq(adapter, IRQ_CTRL_DISABLE);
 }
@@ -292,7 +292,8 @@ int nf10_poll(struct napi_struct *napi, int budget)
 
 	if (work_done < budget) {
 		napi_complete(napi);
-		if (likely(buffer_initialized == true))
+		if (likely(buffer_initialized == true) &&
+		    adapter->user_flags & UF_IRQ_ENABLED)
 			nf10_enable_irq(adapter);
 	}
 

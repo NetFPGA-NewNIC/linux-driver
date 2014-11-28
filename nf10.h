@@ -53,6 +53,7 @@
 
 /* user_flags */
 #define UF_USER_ON	0x1
+#define UF_IRQ_ENABLED	0x2
 
 struct nf10_adapter {
 	struct napi_struct napi;
@@ -132,5 +133,7 @@ static inline void nf10_writeq(struct nf10_adapter *adapter, int off, u64 val)
 }
 
 extern void nf10_set_ethtool_ops(struct net_device *netdev);
+void nf10_enable_irq(struct nf10_adapter *adapter);
+void nf10_disable_irq(struct nf10_adapter *adapter);
 
 #endif

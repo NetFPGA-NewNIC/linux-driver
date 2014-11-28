@@ -48,6 +48,7 @@
 #include "nf10.h"
 #include "nf10_user.h"
 #include <linux/sched.h>
+#include <linux/poll.h>
 
 /* AXI host completion buffer size: 1st 8B for read and 2nd 8B for write */
 #define AXI_COMPLETION_SIZE		16
@@ -115,6 +116,20 @@ static int nf10_mmap(struct file *f, struct vm_area_struct *vma)
 		adapter->nr_user_mmap++;
 
 	return err;
+}
+
+static unsigned int nf10_poll(struct file *f, poll_table *wait)
+{
+	struct nf10_adapter *adapter = f->private_data;
+
+	adapter->user_flags |= UF_IRQ_ENABLED;
+	nf10_enable_irq(adapter);
+
+	poll_wait(f, &adapter->wq_user_intr, wait);
+
+	adapter->user_flags &= ~UF_IRQ_ENABLED;
+
+	return POLLIN | POLLRDNORM;
 }
 
 #define AXI_LOOP_THRESHOLD	100000000
@@ -228,6 +243,7 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	{
 		unsigned long ret = 0;
 		adapter->nr_user_mmap = 0;
+		nf10_disable_irq(adapter);
 		adapter->user_flags |= UF_USER_ON;
 		if (adapter->user_ops->init) {
 			ret = adapter->user_ops->init(adapter, arg);
@@ -249,6 +265,7 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			if (copy_to_user((void __user *)arg, &ret, sizeof(u64)))
 				return -EFAULT;
 		}
+		nf10_enable_irq(adapter);
 		netif_dbg(adapter, drv, default_netdev(adapter),
 			  "user exit: flags=%x ret=%lu\n",
 			  adapter->user_flags, ret);
@@ -298,6 +315,7 @@ static struct file_operations nf10_fops = {
 	.owner = THIS_MODULE,
 	.open = nf10_open,
 	.mmap = nf10_mmap,
+	.poll = nf10_poll,
 	.unlocked_ioctl = nf10_ioctl,
 	.release = nf10_release
 };
