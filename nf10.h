@@ -71,7 +71,6 @@ struct nf10_adapter {
 #endif
 	/* direct user access (kernel bypass) */
 	struct nf10_user_ops *user_ops;
-	unsigned long user_private;
 	struct cdev cdev;
 	u32 user_flags;
 	unsigned int nr_user_mmap;

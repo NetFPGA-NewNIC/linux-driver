@@ -124,10 +124,14 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 
 	adapter->user_flags |= UF_IRQ_ENABLED;
 	nf10_enable_irq(adapter);
+	netif_dbg(adapter, drv, default_netdev(adapter),
+		  "poll wait w/ irq enabled\n");
 
 	poll_wait(f, &adapter->wq_user_intr, wait);
 
 	adapter->user_flags &= ~UF_IRQ_ENABLED;
+	netif_dbg(adapter, drv, default_netdev(adapter),
+		  "poll wake-up w/ irq disabled\n");
 
 	return POLLIN | POLLRDNORM;
 }
@@ -280,16 +284,11 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		break;
 	case NF10_IOCTL_CMD_WAIT_INTR:
 	{
-		u64 ret;
-
 		DEFINE_WAIT(wait);
 		prepare_to_wait(&adapter->wq_user_intr, &wait,
 				TASK_INTERRUPTIBLE);
 		io_schedule();
 		finish_wait(&adapter->wq_user_intr, &wait);
-		ret = adapter->user_private;
-		if (copy_to_user((void __user *)arg, &ret, sizeof(u64)))
-			return -EFAULT;
 		if (signal_pending(current))
 			pr_debug("signal wakes up a user process\n");
 		break;
@@ -385,12 +384,9 @@ bool nf10_user_rx_callback(struct nf10_adapter *adapter)
 	/* if direct user access mode is enabled, just wake up
 	 * a waiting user thread */
 	if (adapter->user_flags & UF_USER_ON) { 
-		if (likely(waitqueue_active(&adapter->wq_user_intr))) {
-			wmb();	/* adapter->user_private */
-
+		if (waitqueue_active(&adapter->wq_user_intr)) {
 			netif_dbg(adapter, drv, default_netdev(adapter),
-				  "waking up user process (user_private=%lu)\n",
-				  adapter->user_private);
+				  "waking up user process\n");
 			wake_up(&adapter->wq_user_intr);
 		}
 		return true;
