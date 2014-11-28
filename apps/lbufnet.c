@@ -47,6 +47,7 @@
 #include <signal.h>
 #include <string.h>
 #include <sys/time.h>
+#include <poll.h>
 
 #include "nf10_lbuf_api.h"
 #include "nf10_user.h"
@@ -154,6 +155,10 @@ do {	\
 	total_rx_packets++;	\
 } while(0)
 
+/* IMPORTANT TODO:
+ * - rx writeback: user doesn't know HW address,
+ *   so should pass rx_cons and kernel can convert it to hw
+ */
 void lbufnet_input(void)
 {
 	void *buf_addr;
@@ -161,13 +166,23 @@ void lbufnet_input(void)
 	int port_num;
 	uint32_t pkt_len, next_pkt_len;
 	void *pkt_addr;
+	struct pollfd pfd = { .fd = fd, .events = POLLIN };
+	int n;
+	unsigned long poll_cnt;
 
 	if (!initialized) {
 		debug("Error: lbuf is not initialized\n");
 		return;
 	}
-
+wait_rx:
 	do {
+		n = poll(&pfd, 1, 1000);
+		debug("Waiting for RX packets (n=%d, revents=%x)\n", n, pfd.revents);
+	} while(n <= 0 || pfd.revents & POLLERR);
+
+	debug("Start receiving packets...\n");
+	do {
+		poll_cnt = 0;
 		dword_idx = ld->rx_cons;
 		buf_addr = rx_lbuf[ld->rx_idx];
 wait_to_start_recv:
@@ -181,10 +196,8 @@ wait_to_start_recv:
 				move_to_next_lbuf();
 				continue;
 			}
-#if 0
 			if (poll_cnt++ > LBUF_POLL_THRESH)
-				goto wait_intr;
-#endif
+				goto wait_rx;
 			goto wait_to_start_recv;
 		}
 		if (!LBUF_IS_PKT_VALID(port_num, pkt_len)) {

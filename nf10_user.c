@@ -125,15 +125,18 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 	adapter->user_flags |= UF_IRQ_ENABLED;
 	nf10_enable_irq(adapter);
 	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "poll wait w/ irq enabled\n");
+		  "poll wait w/ irq enabled (wait=%p, wait->_qproc=%p)\n", wait, wait->_qproc);
 
 	poll_wait(f, &adapter->wq_user_intr, wait);
 
-	adapter->user_flags &= ~UF_IRQ_ENABLED;
-	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "poll wake-up w/ irq disabled\n");
-
-	return POLLIN | POLLRDNORM;
+	if (adapter->user_flags & UF_RX_PENDING) {
+		adapter->user_flags &= ~UF_RX_PENDING;
+		adapter->user_flags &= ~UF_IRQ_ENABLED;
+		netif_dbg(adapter, drv, default_netdev(adapter),
+				"poll wake-up w/ irq disabled\n");
+		return POLLIN | POLLRDNORM;
+	}
+	return 0;
 }
 
 #define AXI_LOOP_THRESHOLD	100000000
@@ -385,6 +388,7 @@ bool nf10_user_rx_callback(struct nf10_adapter *adapter)
 	 * a waiting user thread */
 	if (adapter->user_flags & UF_USER_ON) { 
 		if (waitqueue_active(&adapter->wq_user_intr)) {
+			adapter->user_flags |= UF_RX_PENDING;
 			netif_dbg(adapter, drv, default_netdev(adapter),
 				  "waking up user process\n");
 			wake_up(&adapter->wq_user_intr);

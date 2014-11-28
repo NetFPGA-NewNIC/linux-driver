@@ -595,7 +595,7 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 	union lbuf_header lh;
 
 	if (nf10_user_rx_callback(adapter)) {
-		*work_done = budget;
+		*work_done = 0;
 		return;
 	}
 
