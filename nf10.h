@@ -53,7 +53,7 @@
 
 /* user_flags */
 #define UF_USER_ON	0x1
-#define UF_IRQ_ENABLED	0x2
+#define UF_IRQ_DISABLED	0x2
 #define UF_RX_PENDING	0x4
 
 struct nf10_adapter {

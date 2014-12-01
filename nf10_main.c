@@ -293,7 +293,7 @@ int nf10_poll(struct napi_struct *napi, int budget)
 	if (work_done < budget) {
 		napi_complete(napi);
 		if (likely(buffer_initialized == true) &&
-		    adapter->user_flags & UF_IRQ_ENABLED)
+		    !(adapter->user_flags & UF_IRQ_DISABLED))
 			nf10_enable_irq(adapter);
 	}
 

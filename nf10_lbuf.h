@@ -78,6 +78,9 @@ struct desc {
 	dma_addr_t		dma_addr;
 	u32			size;
 	struct sk_buff_head	skbq;
+	unsigned int		tx_prod;
+	unsigned int		tx_prod_pvt;
+	unsigned int		tx_cons;
 	struct list_head	list;
 };
 

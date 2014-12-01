@@ -122,7 +122,7 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 {
 	struct nf10_adapter *adapter = f->private_data;
 
-	adapter->user_flags |= UF_IRQ_ENABLED;
+	adapter->user_flags &= ~UF_IRQ_DISABLED;
 	nf10_enable_irq(adapter);
 	netif_dbg(adapter, drv, default_netdev(adapter),
 		  "poll wait w/ irq enabled (wait=%p, wait->_qproc=%p)\n", wait, wait->_qproc);
@@ -131,7 +131,7 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 
 	if (adapter->user_flags & UF_RX_PENDING) {
 		adapter->user_flags &= ~UF_RX_PENDING;
-		adapter->user_flags &= ~UF_IRQ_ENABLED;
+		adapter->user_flags |= UF_IRQ_DISABLED;
 		netif_dbg(adapter, drv, default_netdev(adapter),
 				"poll wake-up w/ irq disabled\n");
 		return POLLIN | POLLRDNORM;
