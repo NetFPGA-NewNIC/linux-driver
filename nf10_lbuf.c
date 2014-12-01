@@ -820,21 +820,51 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 	return NETDEV_TX_OK;
 }
 
+#define addr_in_lbuf(d, addr)	(addr > d->dma_addr && addr <= d->dma_addr + d->size)
+static struct desc *find_desc_by_addr(dma_addr_t addr)
+{
+	int i;
+	if (addr_in_lbuf(tx_kern_desc(), addr))
+		return tx_kern_desc();
+	for (i = 0; i < NR_TX_USER_LBUF; i++) {
+		if (!tx_user_desc(i))
+			break;
+		if (addr_in_lbuf(tx_user_desc(i), addr))
+			return tx_user_desc(i);
+	}
+	BUG();
+	return NULL;
+}
+
+static bool tx_clean_all_completed(void)
+{
+	int i;
+	bool clean_completed = tx_clean_completed(tx_kern_desc());
+	for (i = 0; i < NR_TX_USER_LBUF; i++) {
+		if (!tx_user_desc(i))
+			break;
+		clean_completed &= tx_clean_completed(tx_user_desc(i));
+	}
+	return clean_completed;
+}
+
 static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 {
 	dma_addr_t gc_addr;
 	u32 cons;
-	struct desc *desc = tx_kern_desc();
+	struct desc *desc;
 	struct sk_buff *skb;
 	int i;
 again:
 	rmb();
 	gc_addr = get_tx_last_gc_addr();
+	if (gc_addr == get_tx_writeback())
+		goto out;
+
+	desc = find_desc_by_addr(gc_addr);
 	pr_debug("%s: gc_addr=%p tx_wb=%p prod=%u cons=%u\n", __func__,
 		 (void *)gc_addr, (void *)get_tx_writeback(), get_tx_prod(desc), get_tx_cons(desc));
 
-	if (gc_addr == get_tx_writeback())
-		goto out;
 	cons = ALIGN(gc_addr - desc->dma_addr, 4096);
 	if (cons == desc->size)
 		cons = 0;
@@ -856,10 +886,10 @@ again:
 
 	set_tx_writeback(gc_addr);
 	pr_debug("%s: -> cons=%u\n", __func__, cons);
-	if (!tx_clean_completed(desc))
+	if (!tx_clean_all_completed())
 		goto again;
 out:
-	return tx_clean_completed(desc);
+	return tx_clean_all_completed();
 }
 
 static unsigned long nf10_lbuf_ctrl_irq(struct nf10_adapter *adapter,
