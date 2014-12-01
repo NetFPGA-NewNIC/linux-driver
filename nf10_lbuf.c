@@ -708,7 +708,7 @@ static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
 	prod = get_tx_prod(desc);
 	prod_pvt = get_tx_prod_pvt(desc);
 	if (!get_tx_avail(idx) || prod == prod_pvt) {
-		spin_unlock(&tx_lock);
+		spin_unlock_bh(&tx_lock);
 		return -EBUSY;
  	}
 	next_prod = ALIGN(prod_pvt, 4096);
