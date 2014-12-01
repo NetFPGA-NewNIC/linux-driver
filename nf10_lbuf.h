@@ -81,57 +81,5 @@ struct desc {
 	unsigned int		tx_prod;
 	unsigned int		tx_prod_pvt;
 	unsigned int		tx_cons;
-	struct list_head	list;
 };
-
-struct lbuf_head {
-	struct list_head head;
-	spinlock_t lock;
-};
-
-#define lbuf_for_each_entry_safe(pos, n, lhead)	\
-	list_for_each_entry_safe(pos, n, &(lhead)->head, list)
-
-static inline void lbuf_head_init(struct lbuf_head *head)
-{
-	INIT_LIST_HEAD(&head->head);
-	spin_lock_init(&head->lock);
-}
-
-static inline int lbuf_queue_empty(struct lbuf_head *head)
-{
-	smp_read_barrier_depends();
-	return list_empty(&head->head);
-}
-
-static inline void __lbuf_queue_tail(struct lbuf_head *head, struct desc *desc)
-{
-	list_add_tail(&desc->list, &head->head);
-}
-
-static inline void __lbuf_queue_head(struct lbuf_head *head, struct desc *desc)
-{
-	list_add(&desc->list, &head->head);
-}
-
-static inline struct desc *__lbuf_dequeue(struct lbuf_head *head)
-{
-	struct desc *desc = NULL;
-
-	if (!list_empty(&head->head)) {
-		desc = list_first_entry(&head->head, struct desc, list);
-		list_del(&desc->list);
-	}
-	return desc;
-}
-
-static inline void __lbuf_del(struct desc *desc)
-{
-	list_del(&desc->list);
-}
-
-extern void lbuf_queue_tail(struct lbuf_head *head, struct desc *desc);
-extern void lbuf_queue_head(struct lbuf_head *head, struct desc *desc);
-extern struct desc *lbuf_dequeue(struct lbuf_head *head);
-
 #endif

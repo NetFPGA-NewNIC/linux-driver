@@ -210,32 +210,6 @@ static void free_lbuf(struct nf10_adapter *adapter, struct desc *desc)
 	__free_desc(desc);
 }
 
-void lbuf_queue_tail(struct lbuf_head *head, struct desc *desc)
-{
-	spin_lock(&head->lock);
-	__lbuf_queue_tail(head, desc);
-	spin_unlock(&head->lock);
-}
-
-void lbuf_queue_head(struct lbuf_head *head, struct desc *desc)
-{
-	/* no need of lockless currently */
-	spin_lock(&head->lock);
-	__lbuf_queue_head(head, desc);
-	spin_unlock(&head->lock);
-}
-
-struct desc *lbuf_dequeue(struct lbuf_head *head)
-{
-	struct desc *desc;
-
-	spin_lock(&head->lock);
-	desc = __lbuf_dequeue(head);
-	spin_unlock(&head->lock);
-
-	return desc;
-}
-
 static void enable_irq(struct nf10_adapter *adapter)
 {
 	if (get_tx_writeback())
