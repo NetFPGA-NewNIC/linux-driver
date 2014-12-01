@@ -111,8 +111,6 @@ static struct lbuf_info {
 
 #define addr_in_lbuf(d, addr)	(addr > d->dma_addr && addr <= d->dma_addr + d->size)
 
-spinlock_t tx_lock;
-
 #if 0
 /* tx buffers reserved for user space */
 struct desc *tx_user_lbufs[NR_TX_USER_LBUF];
@@ -160,6 +158,7 @@ static inline void *__alloc_lbuf(struct nf10_adapter *adapter,
 	set_tx_prod_pvt(desc, 0);
 	set_tx_cons(desc, 0);
 	skb_queue_head_init(&desc->skbq);
+	spin_lock_init(&desc->lock);
 
 	return desc->kern_addr;
 }
@@ -463,9 +462,6 @@ static int nf10_lbuf_init(struct nf10_adapter *adapter)
 		pr_err("failed to alloc desc_cache\n");
 		return -ENOMEM;
 	}
-	/* init tx-related list/spinlock */
-	spin_lock_init(&tx_lock);
-
 	/* init lbuf user-visiable single-page space in lbuf_hw */
 	if ((lbuf_info.u =
 	     (struct lbuf_user *)get_zeroed_page(GFP_KERNEL)) == NULL) {
@@ -680,15 +676,14 @@ static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
 	dma_addr_t dma_addr;
 
 	/* TODO: 
-	 * instead tx_lock, use per-desc lock?
 	 * sanity check for alignment,
 	 * optimization with test avail? */
-	spin_lock_bh(&tx_lock);
+	spin_lock_bh(&desc->lock);
 	idx = tx_idx();
 	prod = get_tx_prod(desc);
 	prod_pvt = get_tx_prod_pvt(desc);
 	if (!get_tx_avail(idx) || prod == prod_pvt) {
-		spin_unlock_bh(&tx_lock);
+		spin_unlock_bh(&desc->lock);
 		return -EBUSY;
  	}
 	next_prod = ALIGN(prod_pvt, 4096);
@@ -699,7 +694,7 @@ static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
 
 	set_tx_used(idx);
 	inc_tx_idx();
-	spin_unlock_bh(&tx_lock);
+	spin_unlock_bh(&desc->lock);
 
 	dma_addr = desc->dma_addr + prod;
  	nr_qwords = (prod_pvt - prod) >> 3;
@@ -742,7 +737,7 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	u32 cons;
 	u32 avail_size;
 
-	spin_lock(&tx_lock);
+	spin_lock(&desc->lock);
 	prod = get_tx_prod(desc);
 	prod_pvt = get_tx_prod_pvt(desc);
 	pr_debug("%s: prod=%u prod_pvt=%u\n", __func__, prod, prod_pvt);
@@ -751,7 +746,7 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 		/* if unsent packets exist, return with busy, since
 		 * discontrigous packets are not allowed to be sent as a lbuf */
 		if (prod != prod_pvt) {
-			spin_unlock(&tx_lock);
+			spin_unlock(&desc->lock);
 			return -EBUSY;
 		}
 		/* now ensure all pending packets have been sent, wrap around */
@@ -766,7 +761,7 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	pr_debug("%s: prod_pvt=%u cons=%u avail=%u req_size=%u pkt_len=%u\n", __func__,
 		 prod_pvt, cons, avail_size, ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE, pkt_len);
 	if (ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE > avail_size) {
-		spin_unlock(&tx_lock);
+		spin_unlock(&desc->lock);
 		return -EBUSY;
 	}
 
@@ -774,7 +769,7 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	prod_pvt = __copy_skb_to_lbuf(desc, desc->kern_addr + prod_pvt,
 				      netdev_port_num(netdev), skb);
 	set_tx_prod_pvt(desc, prod_pvt);
-	spin_unlock(&tx_lock);
+	spin_unlock(&desc->lock);
 
 	netdev->stats.tx_packets++;
 	pr_debug("%s: updated prod_pvt=%u tx_packets=%lu\n", __func__,

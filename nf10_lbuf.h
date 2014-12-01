@@ -81,5 +81,6 @@ struct desc {
 	unsigned int		tx_prod;
 	unsigned int		tx_prod_pvt;
 	unsigned int		tx_cons;
+	spinlock_t		lock;
 };
 #endif
