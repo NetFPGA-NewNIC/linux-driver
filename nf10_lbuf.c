@@ -99,6 +99,7 @@ static struct lbuf_info {
 #define get_tx_cons(d)		(d->tx_cons)
 #define set_tx_cons(d, v)	do { d->tx_cons = v; } while(0)
 #define tx_clean_completed(d)	(get_tx_prod(d) == get_tx_cons(d))
+#define tx_pending(d)		(get_tx_prod_pvt(d) - get_tx_prod(d) > 0)
 
 #define get_tx_writeback()	(lbuf_info.u->tx_writeback)
 #define get_rx_writeback()	(lbuf_info.u->rx_writeback)
@@ -107,6 +108,8 @@ static struct lbuf_info {
 
 #define lbuf_cb(skb)		(*(u64 *)&((skb)->cb[32]))
 #define get_tx_last_gc_addr()	ACCESS_ONCE(*(u64 *)(lbuf_info.tx_completion_kern_addr + TX_LAST_GC_ADDR_OFFSET))
+
+#define addr_in_lbuf(d, addr)	(addr > d->dma_addr && addr <= d->dma_addr + d->size)
 
 spinlock_t tx_lock;
 
@@ -153,7 +156,9 @@ static inline void *__alloc_lbuf(struct nf10_adapter *adapter,
 	desc->kern_addr = pci_alloc_consistent(adapter->pdev, size,
 					       &desc->dma_addr);
 	desc->size = size;
-	desc->tx_prod = desc->tx_prod_pvt = desc->tx_cons = 0;
+	set_tx_prod(desc, 0);
+	set_tx_prod_pvt(desc, 0);
+	set_tx_cons(desc, 0);
 	skb_queue_head_init(&desc->skbq);
 
 	return desc->kern_addr;
@@ -460,6 +465,7 @@ static int nf10_lbuf_user_xmit(struct nf10_adapter *adapter, unsigned long arg)
 		return -EINVAL;
 	}
 	/* SET tx_prod, tx_prod_pvt .... */
+
 	lbuf_xmit(adapter, desc);
 
 	return 0;
@@ -820,7 +826,6 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 	return NETDEV_TX_OK;
 }
 
-#define addr_in_lbuf(d, addr)	(addr > d->dma_addr && addr <= d->dma_addr + d->size)
 static struct desc *find_desc_by_addr(dma_addr_t addr)
 {
 	int i;
@@ -848,6 +853,20 @@ static bool tx_clean_all_completed(void)
 	return clean_completed;
 }
 
+static void lbuf_pending_xmit(struct nf10_adapter *adapter)
+{
+	int i;
+	if (tx_pending(tx_kern_desc()))
+		lbuf_xmit(adapter, tx_kern_desc());
+	for (i = 0; i < NR_TX_USER_LBUF; i++) {
+		if (!tx_user_desc(i))
+			break;
+		if (tx_pending(tx_user_desc(i)))
+			lbuf_xmit(adapter, tx_user_desc(i));
+	}
+
+}
+
 static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 {
 	dma_addr_t gc_addr;
@@ -870,10 +889,8 @@ again:
 		cons = 0;
 	set_tx_cons(desc, cons);
 	smp_wmb();
-	if (get_tx_prod_pvt(desc) - get_tx_prod(desc) > 0) {
-		pr_debug("lbuf_xmit in irq\n");
-		lbuf_xmit(adapter, desc);
-	}
+	lbuf_pending_xmit(adapter);
+
 	while((skb = skb_dequeue(&desc->skbq))) {
 		pr_debug("\t--gcskb=%p\n", (void *)lbuf_cb(skb));
 		dev_kfree_skb_any(skb);
