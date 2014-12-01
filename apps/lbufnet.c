@@ -155,10 +155,6 @@ do {	\
 	total_rx_packets++;	\
 } while(0)
 
-/* IMPORTANT TODO:
- * - rx writeback: user doesn't know HW address,
- *   so should pass rx_cons and kernel can convert it to hw
- */
 void lbufnet_input(void)
 {
 	void *buf_addr;
@@ -196,8 +192,10 @@ wait_to_start_recv:
 				move_to_next_lbuf();
 				continue;
 			}
-			if (poll_cnt++ > LBUF_POLL_THRESH)
+			if (poll_cnt++ > LBUF_POLL_THRESH) {
+				ld->rx_writeback = dword_idx;
 				goto wait_rx;
+			}
 			goto wait_to_start_recv;
 		}
 		if (!LBUF_IS_PKT_VALID(port_num, pkt_len)) {

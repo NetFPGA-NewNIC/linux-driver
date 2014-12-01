@@ -234,8 +234,10 @@ static void enable_irq(struct nf10_adapter *adapter)
 {
 	if (get_tx_writeback())
 		nf10_writeq(adapter, TX_WRITEBACK_REG, get_tx_writeback());
-	if (get_rx_writeback())
-		nf10_writeq(adapter, RX_WRITEBACK_REG, get_rx_writeback());
+	if (get_rx_writeback()) {
+		nf10_writeq(adapter, RX_WRITEBACK_REG,
+		  (u64)&DWORD_GET(cur_rx_desc()->dma_addr, get_rx_writeback()));
+	}
 	wmb();
 	nf10_writel(adapter, IRQ_ENABLE_REG, IRQ_CTRL_VAL);
 	netif_dbg(adapter, intr, default_netdev(adapter),
@@ -702,7 +704,7 @@ wait_to_end_recv:
 	netif_dbg(adapter, rx_status, default_netdev(adapter),
 		  "loop exit: i=%u wd=%d rxaddr=%p\n",
 		  dword_idx, *work_done, &DWORD_GET(cur_rx_desc()->dma_addr, dword_idx));
-	set_rx_writeback(&DWORD_GET(cur_rx_desc()->dma_addr, dword_idx));
+	set_rx_writeback(dword_idx);
 }
 
 static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
