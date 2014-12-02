@@ -62,6 +62,7 @@ static struct lbuf_info {
 	struct desc *rx_desc[NR_SLOT];
 	struct desc *tx_kern_desc;
 	struct desc *tx_user_desc[NR_TX_USER_LBUF];
+	u8 gc_ref;
 	struct lbuf_user *u;
 
 	/* tx completion buffer */
@@ -98,8 +99,10 @@ static struct lbuf_info {
 #define set_tx_prod_pvt(d, v)	do { d->tx_prod_pvt = v; } while(0)
 #define get_tx_cons(d)		(d->tx_cons)
 #define set_tx_cons(d, v)	do { d->tx_cons = v; } while(0)
+#define init_tx_pointers(d)	do { set_tx_prod(desc, 0); set_tx_prod_pvt(desc, 0); set_tx_cons(desc, 0); } while(0)
 #define tx_clean_completed(d)	(get_tx_prod(d) == get_tx_cons(d))
 #define tx_pending(d)		(get_tx_prod_pvt(d) - get_tx_prod(d) > 0)
+#define set_tx_user_avail(i, v)	do { smp_wmb(); lbuf_info.u->tx_avail[i] = v; } while(0)
 
 #define get_tx_writeback()	(lbuf_info.u->tx_writeback)
 #define get_rx_writeback()	(lbuf_info.u->rx_writeback)
@@ -108,24 +111,10 @@ static struct lbuf_info {
 
 #define lbuf_cb(skb)		(*(u64 *)&((skb)->cb[32]))
 #define get_tx_last_gc_addr()	ACCESS_ONCE(*(u64 *)(lbuf_info.tx_completion_kern_addr + TX_LAST_GC_ADDR_OFFSET))
+#define get_gc_ref()		(lbuf_info.gc_ref)
+#define set_gc_ref(v)		do { lbuf_info.gc_ref = v; } while(0)
 
 #define addr_in_lbuf(d, addr)	(addr > d->dma_addr && addr <= d->dma_addr + d->size)
-
-#if 0
-/* tx buffers reserved for user space */
-struct desc *tx_user_lbufs[NR_TX_USER_LBUF];
-/* to distinguish user and kernel tx buffers, reuse skb by making
- * skb and kern_addr equal */
-#define is_user_lbuf(desc)	(desc->kern_addr == desc->skb)
-static inline void make_user_lbuf(struct desc *desc)
-{
-	desc->skb = desc->kern_addr;
-	LBUF_SET_TX_AVAIL(desc->kern_addr);
-}
-#endif
-
-/* default tx buffer size for kernel space */
-#define DEFAULT_TX_LBUF_SIZE	(128*1024)
 
 /* profiling memcpy performance */
 #ifdef CONFIG_PROFILE
@@ -154,9 +143,7 @@ static inline void *__alloc_lbuf(struct nf10_adapter *adapter,
 	desc->kern_addr = pci_alloc_consistent(adapter->pdev, size,
 					       &desc->dma_addr);
 	desc->size = size;
-	set_tx_prod(desc, 0);
-	set_tx_prod_pvt(desc, 0);
-	set_tx_cons(desc, 0);
+	init_tx_pointers(desc);
 	skb_queue_head_init(&desc->skbq);
 	spin_lock_init(&desc->lock);
 
@@ -262,41 +249,46 @@ static int init_tx_lbufs(struct nf10_adapter *adapter)
 }
 
 static unsigned long get_tx_user_lbuf(struct nf10_adapter *adapter,
-				      int idx, unsigned long size)
+				      int ref, unsigned long size)
 {
 	struct desc *desc;
 
-	if (unlikely(idx >= NR_TX_USER_LBUF)) {
-		pr_err("%s: idx(=%d) >= %d\n", __func__, idx, NR_TX_USER_LBUF);
+	if (unlikely(ref >= NR_TX_USER_LBUF)) {
+		pr_err("%s: ref(=%d) >= %d\n", __func__, ref, NR_TX_USER_LBUF);
 		return 0;
 	}
 
-	desc = tx_user_desc(idx);
+	desc = tx_user_desc(ref);
 	/* reuse tx buffer if existing lbuf >= requested size */
 	if (!desc || desc->size < size) {
 		free_lbuf(adapter, desc);
 		if ((desc = alloc_lbuf(adapter, size)) == NULL) {
 			pr_err("%s: failed to allocate tx_user_desc[%d]\n",
-			       __func__, idx);
+			       __func__, ref);
 			return 0;
 		}
-		tx_user_desc(idx) = desc;
+		tx_user_desc(ref) = desc;
 	}
+	set_tx_user_avail(ref, 1);
 	return virt_to_phys(desc->kern_addr) >> PAGE_SHIFT;
 }
 
-static void put_tx_user_lbuf(struct nf10_adapter *adapter, int idx)
+static void put_tx_user_lbuf(struct nf10_adapter *adapter, int ref)
 {
-	if (idx >= NR_TX_USER_LBUF || !tx_user_desc(idx))
+	if (ref >= NR_TX_USER_LBUF || !tx_user_desc(ref))
 		return;
-	free_lbuf(adapter, tx_user_desc(idx));
-	tx_user_desc(idx) = NULL;
+	free_lbuf(adapter, tx_user_desc(ref));
+	tx_user_desc(ref) = NULL;
 }
 
 static void free_tx_lbufs(struct nf10_adapter *adapter)
 {
 	int i;
 
+	if (skb_queue_len(&tx_kern_desc()->skbq) > 0)
+		pr_warn("Warning: %d non-freed skbs exist in kernel tx lbuf\n",
+			skb_queue_len(&tx_kern_desc()->skbq));
+	skb_queue_purge(&tx_kern_desc()->skbq);
 	free_lbuf(adapter, tx_kern_desc());
 	pci_free_consistent(adapter->pdev, TX_COMPLETION_SIZE,
 			    lbuf_info.tx_completion_kern_addr,
@@ -437,8 +429,10 @@ static int nf10_lbuf_user_xmit(struct nf10_adapter *adapter, unsigned long arg)
 		pr_err("%s: Error tx_user_lbufs[%d] is NULL\n", __func__, ref);
 		return -EINVAL;
 	}
-	/* SET tx_prod, tx_prod_pvt .... */
-
+	/* no need to acquire desc->lock, since it hasn't been submitted
+	 * to kernel */
+	set_tx_user_avail(ref, 0);
+	set_tx_prod_pvt(desc, len);
 	lbuf_xmit(adapter, desc);
 
 	return 0;
@@ -737,7 +731,7 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	u32 cons;
 	u32 avail_size;
 
-	spin_lock(&desc->lock);
+	spin_lock_bh(&desc->lock);
 	prod = get_tx_prod(desc);
 	prod_pvt = get_tx_prod_pvt(desc);
 	pr_debug("%s: prod=%u prod_pvt=%u\n", __func__, prod, prod_pvt);
@@ -746,7 +740,7 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 		/* if unsent packets exist, return with busy, since
 		 * discontrigous packets are not allowed to be sent as a lbuf */
 		if (prod != prod_pvt) {
-			spin_unlock(&desc->lock);
+			spin_unlock_bh(&desc->lock);
 			return -EBUSY;
 		}
 		/* now ensure all pending packets have been sent, wrap around */
@@ -761,7 +755,7 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	pr_debug("%s: prod_pvt=%u cons=%u avail=%u req_size=%u pkt_len=%u\n", __func__,
 		 prod_pvt, cons, avail_size, ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE, pkt_len);
 	if (ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE > avail_size) {
-		spin_unlock(&desc->lock);
+		spin_unlock_bh(&desc->lock);
 		return -EBUSY;
 	}
 
@@ -769,7 +763,7 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	prod_pvt = __copy_skb_to_lbuf(desc, desc->kern_addr + prod_pvt,
 				      netdev_port_num(netdev), skb);
 	set_tx_prod_pvt(desc, prod_pvt);
-	spin_unlock(&desc->lock);
+	spin_unlock_bh(&desc->lock);
 
 	netdev->stats.tx_packets++;
 	pr_debug("%s: updated prod_pvt=%u tx_packets=%lu\n", __func__,
@@ -795,43 +789,64 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 	return NETDEV_TX_OK;
 }
 
-static struct desc *find_desc_by_addr(dma_addr_t addr)
+static struct desc *gc_desc(dma_addr_t gc_addr)
 {
-	int i;
-	if (addr_in_lbuf(tx_kern_desc(), addr))
-		return tx_kern_desc();
-	for (i = 0; i < NR_TX_USER_LBUF; i++) {
-		if (!tx_user_desc(i))
-			break;
-		if (addr_in_lbuf(tx_user_desc(i), addr))
-			return tx_user_desc(i);
+	struct desc *desc;
+	u32 cons;
+	int ref;
+
+	/* first check if addr belongs to kernel buffer and update cons */
+	if (addr_in_lbuf(tx_kern_desc(), gc_addr)) {
+		desc = tx_kern_desc();
+		/* update cons, make it aligned and wrap around */
+		cons = ALIGN(gc_addr - desc->dma_addr, 4096);
+		if (cons == desc->size)
+			cons = 0;
+		set_tx_cons(desc, cons);
+		smp_wmb();
+
+		return desc;
 	}
-	BUG();
-	return NULL;
+	/* now gc addr must be for user lbufs */
+	do {
+		ref = get_gc_ref();	/* next ref to be GCed */
+		desc = tx_user_desc(ref);
+		if (!desc)	/* bug */
+			break;
+		/* user lbuf is GCed at once, so initialize all pointers */
+		init_tx_pointers(desc);
+		/* now user can reuse this buffer */
+		set_tx_user_avail(ref, 1);
+		inc_txbuf_ref(ref);
+	} while(!addr_in_lbuf(desc, gc_addr));
+	/* if addr belongs to this desc, stop GCing and update next gc_ref */
+	if (likely(desc))
+		set_gc_ref(ref);
+	return desc;
 }
 
 static bool tx_clean_all_completed(void)
 {
-	int i;
+	int ref;
 	bool clean_completed = tx_clean_completed(tx_kern_desc());
-	for (i = 0; i < NR_TX_USER_LBUF; i++) {
-		if (!tx_user_desc(i))
+	for (ref = 0; ref < NR_TX_USER_LBUF; ref++) {
+		if (!tx_user_desc(ref))
 			break;
-		clean_completed &= tx_clean_completed(tx_user_desc(i));
+		clean_completed &= tx_clean_completed(tx_user_desc(ref));
 	}
 	return clean_completed;
 }
 
 static void lbuf_pending_xmit(struct nf10_adapter *adapter)
 {
-	int i;
+	int ref;
 	if (tx_pending(tx_kern_desc()))
 		lbuf_xmit(adapter, tx_kern_desc());
-	for (i = 0; i < NR_TX_USER_LBUF; i++) {
-		if (!tx_user_desc(i))
+	for (ref = 0; ref < NR_TX_USER_LBUF; ref++) {
+		if (!tx_user_desc(ref))
 			break;
-		if (tx_pending(tx_user_desc(i)))
-			lbuf_xmit(adapter, tx_user_desc(i));
+		if (tx_pending(tx_user_desc(ref)))
+			lbuf_xmit(adapter, tx_user_desc(ref));
 	}
 
 }
@@ -839,7 +854,6 @@ static void lbuf_pending_xmit(struct nf10_adapter *adapter)
 static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 {
 	dma_addr_t gc_addr;
-	u32 cons;
 	struct desc *desc;
 	struct sk_buff *skb;
 	int i;
@@ -849,29 +863,36 @@ again:
 	if (gc_addr == get_tx_writeback())
 		goto out;
 
-	desc = find_desc_by_addr(gc_addr);
+	/* find a desc gc_addr belongs to */
+	desc = gc_desc(gc_addr);
+	if (unlikely(!desc)) {
+		pr_err("Error: failed to find desc for gc_addr %p\n",
+		       (void *)gc_addr);
+		return tx_clean_all_completed();
+	}
 	pr_debug("%s: gc_addr=%p tx_wb=%p prod=%u cons=%u\n", __func__,
 		 (void *)gc_addr, (void *)get_tx_writeback(), get_tx_prod(desc), get_tx_cons(desc));
 
-	cons = ALIGN(gc_addr - desc->dma_addr, 4096);
-	if (cons == desc->size)
-		cons = 0;
-	set_tx_cons(desc, cons);
-	smp_wmb();
+	/* xmit pending packets on all tx descs */
 	lbuf_pending_xmit(adapter);
 
+	/* garbage collect lbuf-linked skbs */
 	while((skb = skb_dequeue(&desc->skbq))) {
 		pr_debug("\t--gcskb=%p\n", (void *)lbuf_cb(skb));
 		dev_kfree_skb_any(skb);
 		if (lbuf_cb(skb) == (u64)gc_addr)
 			break;
 	}
+
+	/* wake stopped queue */
 	for (i = 0; i < CONFIG_NR_PORTS; i++)
 		if (netif_queue_stopped(adapter->netdev[i]))
 			netif_wake_queue(adapter->netdev[i]);
 
+	/* store last seen gc address to let hw know it */
 	set_tx_writeback(gc_addr);
-	pr_debug("%s: -> cons=%u\n", __func__, cons);
+
+	/* if still not cleaned for tx, try again to see if more gc needed */
 	if (!tx_clean_all_completed())
 		goto again;
 out:

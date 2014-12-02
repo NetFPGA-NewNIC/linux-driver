@@ -87,7 +87,7 @@ struct lbuf_user {
 	/* rx dword offset to clean (consume) in current lbuf */
 	unsigned int rx_cons;
 
-	unsigned char tx_state[NR_TX_USER_LBUF];
+	unsigned char tx_avail[NR_TX_USER_LBUF];
 
 	/* writeback values for tx/rx: written back to HW to let HW
 	 * know the last status seen by SW */
