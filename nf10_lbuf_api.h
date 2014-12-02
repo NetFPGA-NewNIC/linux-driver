@@ -87,7 +87,7 @@ struct lbuf_user {
 	/* rx dword offset to clean (consume) in current lbuf */
 	unsigned int rx_cons;
 
-	unsigned char tx_avail[NR_TX_USER_LBUF];
+	unsigned long long tx_dma_addr[NR_TX_USER_LBUF];
 
 	/* writeback values for tx/rx: written back to HW to let HW
 	 * know the last status seen by SW */
@@ -186,3 +186,9 @@ union lbuf_header {
 	(lh.is_closed && (lh.nr_qwords << 1) == dword_idx - NR_RESERVED_DWORDS)
 #define LBUF_128B_ALIGN(dword_idx)	ALIGN(dword_idx, 32)
 #define LBUF_POLL_THRESH	10000
+
+#define TX_AVAIL		0xcacabeef
+#define TX_USED			0		/* not HW-dependent could be any value but TX_AVAIL */
+#define TX_LAST_GC_ADDR_OFFSET	(NR_SLOT << 2)		/* last gc addr following completion buffers for all descs */
+#define LBUF_TX_COMPLETION(tx_compl_addr, idx)	DWORD_GET_ONCE(tx_compl_addr, idx)
+#define LBUF_GC_ADDR(tx_compl_addr)		ACCESS_ONCE(*(unsigned long long *)(tx_compl_addr + TX_LAST_GC_ADDR_OFFSET))

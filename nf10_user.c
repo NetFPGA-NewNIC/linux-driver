@@ -122,18 +122,22 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 {
 	struct nf10_adapter *adapter = f->private_data;
 
-	adapter->user_flags &= ~UF_IRQ_DISABLED;
-	nf10_enable_irq(adapter);
+	/* if irq is disabled, enable again before waiting */
+	if (adapter->user_flags & UF_IRQ_DISABLED) {
+		adapter->user_flags &= ~UF_IRQ_DISABLED;
+		nf10_enable_irq(adapter);
+	}
 	netif_dbg(adapter, drv, default_netdev(adapter),
 		  "poll wait w/ irq enabled (wait=%p, wait->_qproc=%p)\n", wait, wait->_qproc);
 
 	poll_wait(f, &adapter->wq_user_intr, wait);
 
 	if (adapter->user_flags & UF_RX_PENDING) {
+		/* UF_RX_PENDING is set by nf10_user_rx_callback, which is
+		 * called in napi thread. So, irq has been already disabled */
 		adapter->user_flags &= ~UF_RX_PENDING;
-		adapter->user_flags |= UF_IRQ_DISABLED;
 		netif_dbg(adapter, drv, default_netdev(adapter),
-				"poll wake-up w/ irq disabled\n");
+			  "poll wake-up w/ irq disabled\n");
 		return POLLIN | POLLRDNORM;
 	}
 	return 0;
@@ -388,7 +392,7 @@ bool nf10_user_rx_callback(struct nf10_adapter *adapter)
 	 * a waiting user thread */
 	if (adapter->user_flags & UF_USER_ON) { 
 		if (waitqueue_active(&adapter->wq_user_intr)) {
-			adapter->user_flags |= UF_RX_PENDING;
+			adapter->user_flags |= (UF_RX_PENDING | UF_IRQ_DISABLED);
 			netif_dbg(adapter, drv, default_netdev(adapter),
 				  "waking up user process\n");
 			wake_up(&adapter->wq_user_intr);

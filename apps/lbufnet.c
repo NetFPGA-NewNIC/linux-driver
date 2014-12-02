@@ -51,6 +51,7 @@
 
 #include "nf10_lbuf_api.h"
 #include "nf10_user.h"
+#include "lbufnet.h"
 
 #define DEV_FNAME	"/dev/" NF10_DRV_NAME
 #define debug(format, arg...)	\
@@ -58,11 +59,17 @@
 
 static int fd;
 static struct lbuf_user *ld;	/* lbuf descriptor */
+void *tx_completion;
 static void *rx_lbuf[NR_SLOT];
 static void *tx_lbuf[NR_TX_USER_LBUF];
 static int initialized;
 static int prev_nr_drops;
 static union lbuf_header lh;
+static unsigned int tx_lbuf_size;
+static int ref_prod;
+static int ref_cons;
+static uint32_t tx_offset;
+static uint8_t tx_avail[NR_TX_USER_LBUF];
 
 unsigned long total_rx_packets, total_rx_bytes;
 
@@ -78,7 +85,7 @@ static void lbufnet_finish(int sig)
 	exit(0);
 }
 
-int lbufnet_init(unsigned int txbuf_size)
+int lbufnet_init(unsigned int _tx_lbuf_size)
 {
 	int i;
 
@@ -100,10 +107,20 @@ int lbufnet_init(unsigned int txbuf_size)
 	debug("DMA metadata is mmaped to vaddr=%p\n", ld);
 	debug("\ttx_idx=%u rx_idx=%u\n", ld->tx_idx, ld->rx_idx);
 	debug("\trx_cons=%u\n", ld->rx_cons);
-	debug("\ttx_avail\n");
+	debug("\ttx_dma_addr\n");
 	for (i = 0; i < NR_TX_USER_LBUF; i++)
-		debug("\t\t[%d]=%u\n", i, ld->tx_avail[i]);
+		debug("\t\t[%d]=%p\n", i, (void *)ld->tx_dma_addr[i]);
 	debug("\ttx_writeback=0x%llx rx_writeback=0x%llx\n", ld->tx_writeback, ld->rx_writeback);
+
+	tx_completion = mmap(NULL, 1 << PAGE_SHIFT, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (tx_completion == MAP_FAILED) {
+		perror("mmap");
+		return -1;
+	}
+	debug("DMA tx completion area is mmaped to vaddr=%p\n", tx_completion);
+	for (i = 0; i < NR_SLOT; i++)
+		debug("\tcompletion[%d]=%x\n", i, LBUF_TX_COMPLETION(tx_completion, i));
+	debug("\tgc_addr=%p\n", (void *)LBUF_GC_ADDR(tx_completion));
 
 	for (i = 0; i < NR_SLOT; i++) {
 		rx_lbuf[i] = mmap(NULL, LBUF_RX_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -118,15 +135,17 @@ int lbufnet_init(unsigned int txbuf_size)
 	prev_nr_drops = lh.nr_drops;
 
 	for (i = 0; i < NR_TX_USER_LBUF; i++) {
-		tx_lbuf[i] = mmap(NULL, txbuf_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		tx_lbuf[i] = mmap(NULL, _tx_lbuf_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 		if (tx_lbuf[i] == MAP_FAILED) {
 			perror("mmap");
 			return -1;
 		}
-		debug("TX lbuf[%d] is mmaped to vaddr=%p w/ size=%u and avail=%u\n",
-		      i, tx_lbuf[i], txbuf_size, ld->tx_avail[i]);
+		tx_avail[i] = 1;
+		debug("TX lbuf[%d] is mmaped to vaddr=%p w/ size=%u\n",
+		      i, tx_lbuf[i], _tx_lbuf_size);
 	}
 
+	tx_lbuf_size = _tx_lbuf_size;
 	initialized = 1;
 
 	signal(SIGINT, lbufnet_finish);	/* XXX: needed? or adding more signals */
@@ -159,6 +178,7 @@ do {	\
 	total_rx_packets++;	\
 } while(0)
 
+/* TODO: multi-port support */
 void lbufnet_input(void)
 {
 	void *buf_addr;
@@ -234,6 +254,77 @@ wait_to_end_recv:
 	} while(1);
 }
 
+int lbufnet_output(int sync_flags)
+{
+	int out_bytes;
+	if (!initialized) {
+		debug("Error: lbuf is not initialized\n");
+		return -1;
+	}
+	if (tx_offset == 0)
+		return -1;
+	while(LBUF_TX_COMPLETION(tx_completion, ld->tx_idx) != TX_AVAIL) {
+		if (sync_flags == SF_NON_BLOCK)
+			return 0;
+	}
+	tx_avail[ref_prod] = 0;
+	ioctl(fd, NF10_IOCTL_CMD_XMIT, NF10_IOCTL_ARG_XMIT(ref_prod, tx_offset));
+	inc_txbuf_ref(ref_prod);
+	out_bytes = tx_offset;
+	tx_offset = 0;
+
+	return out_bytes;
+}
+
+static void clean_tx(void)
+{
+	int last = 0;
+	uint64_t gc_addr = LBUF_GC_ADDR(tx_completion);
+	debug("%s: gc addr=%p tx_writeback=%p\n",
+	      __func__, (void *)gc_addr, (void *)ld->tx_writeback);
+	if (gc_addr == ld->tx_writeback)
+		return;
+	do {
+		last = gc_addr > ld->tx_dma_addr[ref_cons] &&
+		       gc_addr <= ld->tx_dma_addr[ref_cons] + tx_lbuf_size;
+		tx_avail[ref_cons] = 1;
+		debug("%s: clean ref_cons=%d ref_prod=%d by gc_addr %p (last=%d)\n",
+		      __func__, ref_cons, ref_prod, (void *)gc_addr, last);
+		inc_txbuf_ref(ref_cons);
+	} while(!last && ref_cons != ref_prod);
+	ld->tx_writeback = gc_addr;
+}
+
+unsigned int lbufnet_write(void *data, unsigned int len, int sync_flags)
+{
+	void *buf_addr;
+
+	if (!initialized) {
+		debug("Error: lbuf is not initialized\n");
+		return -1;
+	}
+avail_check:
+	while(!tx_avail[ref_prod]) {
+		clean_tx();
+		if (!tx_avail[ref_prod] && sync_flags == SF_NON_BLOCK)
+			return 0;
+		/* TODO: SF_BLOCK using poll */
+	}
+	if (!LBUF_HAS_TX_ROOM(tx_lbuf_size, tx_offset, len)) {
+		lbufnet_output(sync_flags);
+		goto avail_check;
+	}
+	//debug("ref=%d off=%u len=%u\n", ref_prod, tx_offset, len);
+	/* now tx lbuf avaialable */
+	buf_addr = tx_lbuf[ref_prod] + tx_offset;
+	buf_addr = LBUF_CUR_TX_ADDR(buf_addr, 0, len);
+	memcpy(buf_addr, data, len);
+	tx_offset = LBUF_NEXT_TX_ADDR(buf_addr, len) - tx_lbuf[ref_prod];
+
+	return tx_offset;
+}
+
+#if 0
 int main(int argc, char *argv[])
 {
 	lbufnet_init(2 << 20);
@@ -241,3 +332,4 @@ int main(int argc, char *argv[])
 
 	return 0;
 }
+#endif

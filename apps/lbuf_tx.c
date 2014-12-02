@@ -54,18 +54,8 @@
 #include <netinet/udp.h>
 #include <arpa/inet.h>
 
-#include "nf10_lbuf_api.h"
-#include "nf10_user.h"
+#include "lbufnet.h"
 
-#define DEV_FNAME	"/dev/" NF10_DRV_NAME
-#define debug(format, arg...)	\
-	do { printf(NF10_DRV_NAME ":" format, ##arg); } while(0)
-
-int fd;
-unsigned long total_tx_packets, total_tx_bytes;
-struct timeval start_tv, end_tv;
-
-#define POLL_THRESHOLD		10000000000ULL
 #define UDPDEFPORT		5001
 #define MAX_PAYLOAD_SIZE	2048
 struct packet {
@@ -160,12 +150,7 @@ int main(int argc, char *argv[])
 {
 	uint64_t ret;
 	int i;
-	void *rx_buf[NR_LBUF];
-	void *tx_buf[NR_TX_USER_LBUF];
-	void *buf_addr;
-	uint32_t ref;
-	uint32_t pkt_len;
-	uint64_t total_poll_wait_cnt = 0, poll_wait_cnt = 0;
+	unsigned int batched_size;
 	int opt;
 	struct packet_info pinfo = {
 		"11.0.0.1",
@@ -213,73 +198,16 @@ int main(int argc, char *argv[])
 	if (pinfo.batchlen > pinfo.buflen)
 		pinfo.batchlen = pinfo.buflen;
 
-	if ((fd = open(DEV_FNAME, O_RDWR, 0755)) < 0) {
-		perror("open");
-		return -1;
-	}
-
-	if (ioctl(fd, NF10_IOCTL_CMD_INIT, &ret)) {
-		perror("ioctl init");
-		return -1;
-	}
-
-	debug("initialized for direct user access\n");
-
-	for (i = 0; i < NR_LBUF; i++) {
-		/* PROT_READ for rx only */
-		rx_buf[i] = mmap(NULL, LBUF_SIZE, PROT_READ, MAP_PRIVATE, fd, 0);
-		if (rx_buf[i] == MAP_FAILED) {
-			perror("mmap");
-			return -1;
-		}
-		debug("RX lbuf[%d] is mmaped to vaddr=%p w/ size=%lu\n",
-		      i, rx_buf[i], LBUF_SIZE);
-	}
-
-	for (i = 0; i < NR_TX_USER_LBUF; i++) {
-		/* it should be writable and MAP_SHARED, otherwise write leads to CoW and 
-		 * kernel cannot see the update in the right place */
-		tx_buf[i] = mmap(NULL, pinfo.buflen, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-		if (tx_buf[i] == MAP_FAILED) {
-			perror("mmap");
-			return -1;
-		}
-		debug("TX lbuf[%d] is mmaped to vaddr=%p w/ size=%u\n",
-		      i, tx_buf[i], pinfo.buflen);
-	}
-
+	lbufnet_init(pinfo.buflen);
 	init_packet(&pinfo);
 
-	pkt_len = pinfo.len;
-	i = ref = 0;
-	while (i < pinfo.count) {
-		uint32_t offset;
-		buf_addr = tx_buf[ref];
-
-		/* polling for lbuf to be available */
-		while(!LBUF_IS_TX_AVAIL(buf_addr)) {
-			total_poll_wait_cnt++;
-			if (++poll_wait_cnt >= POLL_THRESHOLD)
-				goto err;
-		}
-		poll_wait_cnt = 0;
-cont_fill:
-		offset = buf_addr - tx_buf[ref];
-		if (LBUF_HAS_TX_ROOM(pinfo.buflen, offset, pkt_len)) {
-			buf_addr = LBUF_CUR_TX_ADDR(buf_addr, 0, pkt_len);
-			memcpy(buf_addr, &pinfo.pkt_data, pkt_len);
-			buf_addr = LBUF_NEXT_TX_ADDR(buf_addr, pkt_len);
-			if (++i < pinfo.count && (offset + (2 * pkt_len)) <= pinfo.batchlen)
-				goto cont_fill;
-			else
-				offset = buf_addr - tx_buf[ref];
-		}
-		ioctl(fd, NF10_IOCTL_CMD_XMIT, NF10_IOCTL_ARG_XMIT(ref, offset));
-		inc_txbuf_ref(ref);
+	for (i = 0; i < pinfo.count; i++) {
+		batched_size = lbufnet_write(&pinfo.pkt_data, pinfo.len, SF_BUSY_BLOCK);
+		if (batched_size >= pinfo.batchlen)
+			lbufnet_output();
 	}
-err:
-	debug("%d packets sent (ref=%d total_poll_wait_cnt=%lu (status=%s))\n",
-	      i, ref, total_poll_wait_cnt, poll_wait_cnt == POLL_THRESHOLD ? "Error" : "Done");
+	lbufnet_output();
+	printf("%d packets sent\n", i);
 
 	return 0;
 }
