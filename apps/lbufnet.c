@@ -70,18 +70,13 @@ static int ref_prod;
 static int ref_cons;
 static uint32_t tx_offset;
 static uint8_t tx_avail[NR_TX_USER_LBUF];
-
-unsigned long total_rx_packets, total_rx_bytes;
+static lbufnet_input_cb input_cb;
 
 int lbufnet_exit(void);
 static void lbufnet_finish(int sig)
 {
-	printf("\nReceived packets = %lu (total=%luB avg=%luB)\n",
-		total_rx_packets, total_rx_bytes, total_rx_packets ? total_rx_bytes / total_rx_packets : 0);
 	printf("Dropped packets=%u\n", lh.nr_drops - prev_nr_drops);
-
 	lbufnet_exit();
-
 	exit(0);
 }
 
@@ -163,20 +158,24 @@ int lbufnet_exit(void)
 	return 0;
 }
 
-#define move_to_next_lbuf()	\
-do {	\
-	LBUF_INIT_HEADER(buf_addr);	\
-	ioctl(fd, NF10_IOCTL_CMD_PREPARE_RX, ld->rx_idx);	\
-	inc_idx(ld->rx_idx);	\
-	ld->rx_cons = NR_RESERVED_DWORDS;	\
-} while(0)
+int lbufnet_register_callback(lbufnet_input_cb cb)
+{
+	input_cb = cb;
+}
 
-#define lbuf_input()	\
-do {	\
-	memset(pkt_addr - 8, 0, ALIGN(pkt_len, 8) + 8);	\
-	total_rx_bytes += pkt_len;	\
-	total_rx_packets++;	\
-} while(0)
+static inline void move_to_next_lbuf(void *buf_addr)
+{
+	LBUF_INIT_HEADER(buf_addr);
+	ioctl(fd, NF10_IOCTL_CMD_PREPARE_RX, ld->rx_idx);
+	inc_idx(ld->rx_idx);
+	ld->rx_cons = NR_RESERVED_DWORDS;
+}
+
+static inline void input_callback(void *pkt_addr, uint32_t pkt_len)
+{
+	input_cb(pkt_addr, pkt_len);
+	memset(pkt_addr - LBUF_TX_METADATA_SIZE, 0, ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE);
+}
 
 /* TODO: multi-port support */
 void lbufnet_input(void)
@@ -192,6 +191,10 @@ void lbufnet_input(void)
 
 	if (!initialized) {
 		debug("Error: lbuf is not initialized\n");
+		return;
+	}
+	if (!input_cb) {
+		debug("Error: input callback is not initialized\n");
 		return;
 	}
 wait_rx:
@@ -213,7 +216,7 @@ wait_to_start_recv:
 			/* if this lbuf is closed, move to next lbuf */
 			LBUF_GET_HEADER(buf_addr, lh);
 			if (LBUF_CLOSED(dword_idx, lh)) {
-				move_to_next_lbuf();
+				move_to_next_lbuf(buf_addr);
 				continue;
 			}
 			goto wait_rx;
@@ -228,16 +231,16 @@ wait_to_start_recv:
 wait_to_end_recv:
 		next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
 		if (next_pkt_len > 0) {
-			lbuf_input();
+			input_callback(pkt_addr, pkt_len);
 			ld->rx_cons = next_dword_idx;
 		}
 		else {
 			LBUF_GET_HEADER(buf_addr, lh);
 			if ((lh.nr_qwords << 1) < next_dword_idx - NR_RESERVED_DWORDS)
 				goto wait_to_end_recv;
-			lbuf_input();
+			input_callback(pkt_addr, pkt_len);
 			if (LBUF_CLOSED(next_dword_idx, lh)) {
-				move_to_next_lbuf();
+				move_to_next_lbuf(buf_addr);
 				continue;
 			}
 			next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
@@ -246,7 +249,7 @@ wait_to_end_recv:
 			ld->rx_cons = next_dword_idx;
 		}
 		if (ld->rx_cons >= (LBUF_RX_SIZE >> 2))
-			move_to_next_lbuf();
+			move_to_next_lbuf(buf_addr);
 	} while(1);
 }
 
