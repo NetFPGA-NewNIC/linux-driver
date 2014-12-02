@@ -185,7 +185,6 @@ union lbuf_header {
 #define LBUF_CLOSED(dword_idx, lh)	\
 	(lh.is_closed && (lh.nr_qwords << 1) == dword_idx - NR_RESERVED_DWORDS)
 #define LBUF_128B_ALIGN(dword_idx)	ALIGN(dword_idx, 32)
-#define LBUF_POLL_THRESH	10000
 
 #define TX_AVAIL		0xcacabeef
 #define TX_USED			0		/* not HW-dependent could be any value but TX_AVAIL */

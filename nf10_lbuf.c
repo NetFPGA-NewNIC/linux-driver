@@ -566,7 +566,6 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 		skb = NULL;
 		buf_addr = cur_rx_desc()->kern_addr;
 		dword_idx = get_rx_cons();
-wait_to_start_recv:
 		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
 		pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
 #if 0
@@ -581,15 +580,7 @@ wait_to_start_recv:
 				move_to_next_lbuf(adapter);
 				continue;
 			}
-			/* Now, current packet doesn't start being received.
-			   if polling enough or from 2nd loop of polling, exit loop */
-			if (*work_done > 0 || poll_cnt++ > LBUF_POLL_THRESH) {
-				netif_dbg(adapter, rx_status, default_netdev(adapter),
-					  "out of poll: wd=%d drop=%u",
-					  *work_done, lh.nr_drops);
-				break;
-			}
-			goto wait_to_start_recv;	/* continue polling */
+			break;
 		}
 		/* bug if packet len is invalid */
 		if (unlikely(!LBUF_IS_PKT_VALID(port_num, pkt_len))) {
