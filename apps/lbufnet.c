@@ -54,12 +54,12 @@
 
 #define DEV_FNAME	"/dev/" NF10_DRV_NAME
 #define debug(format, arg...)	\
-	do { printf(NF10_DRV_NAME ":" format, ##arg); } while(0)
+	do { printf(NF10_DRV_NAME ": " format, ##arg); } while(0)
 
 static int fd;
 static struct lbuf_user *ld;	/* lbuf descriptor */
 static void *rx_lbuf[NR_SLOT];
-static void *tx_lbuf;
+static void *tx_lbuf[NR_TX_USER_LBUF];
 static int initialized;
 static int prev_nr_drops;
 static union lbuf_header lh;
@@ -78,7 +78,7 @@ static void lbufnet_finish(int sig)
 	exit(0);
 }
 
-int lbufnet_init(void)
+int lbufnet_init(unsigned int txbuf_size)
 {
 	int i;
 
@@ -100,7 +100,9 @@ int lbufnet_init(void)
 	debug("DMA metadata is mmaped to vaddr=%p\n", ld);
 	debug("\ttx_idx=%u rx_idx=%u\n", ld->tx_idx, ld->rx_idx);
 	debug("\trx_cons=%u\n", ld->rx_cons);
-	debug("\ttx_prod=%u tx_prod_pvt=%u tx_cons=%u\n", ld->tx_prod, ld->tx_prod_pvt, ld->tx_cons);
+	debug("\ttx_avail\n");
+	for (i = 0; i < NR_TX_USER_LBUF; i++)
+		debug("\t\t[%d]=%u\n", i, ld->tx_avail[i]);
 	debug("\ttx_writeback=0x%llx rx_writeback=0x%llx\n", ld->tx_writeback, ld->rx_writeback);
 
 	for (i = 0; i < NR_SLOT; i++) {
@@ -114,14 +116,16 @@ int lbufnet_init(void)
 	}
 	LBUF_GET_HEADER(rx_lbuf[ld->rx_idx], lh);
 	prev_nr_drops = lh.nr_drops;
-	debug("RX qword=%llx, nr_drops=%u\n", lh.qword, lh.nr_drops);
 
-	tx_lbuf = mmap(NULL, LBUF_TX_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	if (tx_lbuf == MAP_FAILED) {
-		perror("mmap");
-		return -1;
+	for (i = 0; i < NR_TX_USER_LBUF; i++) {
+		tx_lbuf[i] = mmap(NULL, txbuf_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		if (tx_lbuf[i] == MAP_FAILED) {
+			perror("mmap");
+			return -1;
+		}
+		debug("TX lbuf[%d] is mmaped to vaddr=%p w/ size=%u and avail=%u\n",
+		      i, tx_lbuf[i], txbuf_size, ld->tx_avail[i]);
 	}
-	debug("TX lbuf is mmaped to vaddr=%p w/ size=%lu\n",tx_lbuf, LBUF_TX_SIZE);
 
 	initialized = 1;
 
@@ -232,7 +236,7 @@ wait_to_end_recv:
 
 int main(int argc, char *argv[])
 {
-	lbufnet_init();
+	lbufnet_init(2 << 20);
 	lbufnet_input();
 
 	return 0;
