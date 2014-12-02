@@ -301,17 +301,6 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			  "user-driven lbuf preparation: i=%lu\n", arg);
 		adapter->user_ops->prepare_rx_buffer(adapter, arg);
 		break;
-	case NF10_IOCTL_CMD_WAIT_INTR:
-	{
-		DEFINE_WAIT(wait);
-		prepare_to_wait(&adapter->user_rx_wq, &wait,
-				TASK_INTERRUPTIBLE);
-		io_schedule();
-		finish_wait(&adapter->user_rx_wq, &wait);
-		if (signal_pending(current))
-			pr_debug("signal wakes up a user process\n");
-		break;
-	}
 	case NF10_IOCTL_CMD_XMIT:
 	{
 		ret = adapter->user_ops->start_xmit(adapter, arg);
