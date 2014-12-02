@@ -121,6 +121,7 @@ static int nf10_mmap(struct file *f, struct vm_area_struct *vma)
 static unsigned int nf10_poll(struct file *f, poll_table *wait)
 {
 	struct nf10_adapter *adapter = f->private_data;
+	unsigned int mask = 0;
 
 	/* if irq is disabled, enable again before waiting */
 	if (adapter->user_flags & UF_IRQ_DISABLED) {
@@ -128,19 +129,24 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 		nf10_enable_irq(adapter);
 	}
 	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "poll wait w/ irq enabled (wait=%p, wait->_qproc=%p)\n", wait, wait->_qproc);
+		  "poll wait w/ irq enabled\n");
 
-	poll_wait(f, &adapter->wq_user_intr, wait);
+	poll_wait(f, &adapter->user_rx_wq, wait);
+	poll_wait(f, &adapter->user_tx_wq, wait);
 
+	/* UF_[RX|TX]_PENDING is set by nf10_user_callback, which is
+	 * called in napi thread. So, irq has been already disabled */
 	if (adapter->user_flags & UF_RX_PENDING) {
-		/* UF_RX_PENDING is set by nf10_user_rx_callback, which is
-		 * called in napi thread. So, irq has been already disabled */
 		adapter->user_flags &= ~UF_RX_PENDING;
-		netif_dbg(adapter, drv, default_netdev(adapter),
-			  "poll wake-up w/ irq disabled\n");
-		return POLLIN | POLLRDNORM;
+		mask |= (POLLIN | POLLRDNORM);
 	}
-	return 0;
+	if (adapter->user_flags & UF_TX_PENDING) {
+		adapter->user_flags &= ~UF_TX_PENDING;
+		mask |= (POLLOUT | POLLWRNORM);
+	}
+	netif_dbg(adapter, drv, default_netdev(adapter),
+		  "poll wake-up w/ mask=%x\n", mask);
+	return mask;
 }
 
 #define AXI_LOOP_THRESHOLD	100000000
@@ -253,9 +259,12 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	case NF10_IOCTL_CMD_INIT:
 	{
 		unsigned long ret = 0;
+
 		adapter->nr_user_mmap = 0;
-		nf10_disable_irq(adapter);
+		adapter->user_flags |= UF_IRQ_DISABLED;
 		adapter->user_flags |= UF_USER_ON;
+
+		nf10_disable_irq(adapter);
 		if (adapter->user_ops->init) {
 			ret = adapter->user_ops->init(adapter, arg);
 			if (copy_to_user((void __user *)arg, &ret, sizeof(u64)))
@@ -269,8 +278,11 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	case NF10_IOCTL_CMD_EXIT:
 	{
 		unsigned long ret = 0;
+
 		adapter->nr_user_mmap = 0;
+		adapter->user_flags &= ~UF_IRQ_DISABLED;
 		adapter->user_flags &= ~UF_USER_ON;
+
 		if (adapter->user_ops->exit) {
 			ret = adapter->user_ops->exit(adapter, arg);
 			if (copy_to_user((void __user *)arg, &ret, sizeof(u64)))
@@ -292,10 +304,10 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	case NF10_IOCTL_CMD_WAIT_INTR:
 	{
 		DEFINE_WAIT(wait);
-		prepare_to_wait(&adapter->wq_user_intr, &wait,
+		prepare_to_wait(&adapter->user_rx_wq, &wait,
 				TASK_INTERRUPTIBLE);
 		io_schedule();
-		finish_wait(&adapter->wq_user_intr, &wait);
+		finish_wait(&adapter->user_rx_wq, &wait);
 		if (signal_pending(current))
 			pr_debug("signal wakes up a user process\n");
 		break;
@@ -386,16 +398,18 @@ int nf10_remove_fops(struct nf10_adapter *adapter)
 	return 0;
 }
 
-bool nf10_user_rx_callback(struct nf10_adapter *adapter)
+bool nf10_user_callback(struct nf10_adapter *adapter, int rx)
 {
+	wait_queue_head_t *q = rx ? &adapter->user_rx_wq : &adapter->user_tx_wq;
+	u32 flag = rx ? UF_RX_PENDING : UF_TX_PENDING;
 	/* if direct user access mode is enabled, just wake up
 	 * a waiting user thread */
 	if (adapter->user_flags & UF_USER_ON) { 
-		if (waitqueue_active(&adapter->wq_user_intr)) {
-			adapter->user_flags |= (UF_RX_PENDING | UF_IRQ_DISABLED);
+		if (waitqueue_active(q)) {
+			adapter->user_flags |= (flag | UF_IRQ_DISABLED);
 			netif_dbg(adapter, drv, default_netdev(adapter),
-				  "waking up user process\n");
-			wake_up(&adapter->wq_user_intr);
+				  "wake up a task for %s\n", rx ? "rx" : "tx");
+			wake_up(q);
 		}
 		return true;
 	}

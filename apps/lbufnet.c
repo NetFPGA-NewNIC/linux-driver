@@ -253,6 +253,9 @@ wait_to_end_recv:
 int lbufnet_output(int sync_flags)
 {
 	int out_bytes;
+	struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+	int n;
+
 	if (!initialized) {
 		debug("Error: lbuf is not initialized\n");
 		return -1;
@@ -262,6 +265,13 @@ int lbufnet_output(int sync_flags)
 	while(LBUF_TX_COMPLETION(tx_completion, ld->tx_idx) != TX_AVAIL) {
 		if (sync_flags == SF_NON_BLOCK)
 			return 0;
+		if (sync_flags == SF_BUSY_BLOCK)
+			continue;
+		if (sync_flags != SF_BLOCK)
+			return -1;
+		do {
+			n = poll(&pfd, 1, 1000);
+		} while (n <= 0 || pfd.revents & POLLERR);
 	}
 	tx_avail[ref_prod] = 0;
 	ioctl(fd, NF10_IOCTL_CMD_XMIT, NF10_IOCTL_ARG_XMIT(ref_prod, tx_offset));
@@ -294,6 +304,8 @@ static void clean_tx(void)
 unsigned int lbufnet_write(void *data, unsigned int len, int sync_flags)
 {
 	void *buf_addr;
+	struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+	int n;
 
 	if (!initialized) {
 		debug("Error: lbuf is not initialized\n");
@@ -302,9 +314,17 @@ unsigned int lbufnet_write(void *data, unsigned int len, int sync_flags)
 avail_check:
 	while(!tx_avail[ref_prod]) {
 		clean_tx();
-		if (!tx_avail[ref_prod] && sync_flags == SF_NON_BLOCK)
-			return 0;
-		/* TODO: SF_BLOCK using poll */
+		if (!tx_avail[ref_prod]) {
+			if (sync_flags == SF_NON_BLOCK)
+				return 0;
+			if (sync_flags == SF_BUSY_BLOCK)
+				continue;
+			if (sync_flags != SF_BLOCK)
+				return -1;
+			do {
+				n = poll(&pfd, 1, 1000);
+			} while (n <= 0 || pfd.revents & POLLERR);
+		}
 	}
 	if (!LBUF_HAS_TX_ROOM(tx_lbuf_size, tx_offset, len)) {
 		lbufnet_output(sync_flags);

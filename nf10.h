@@ -55,6 +55,7 @@
 #define UF_USER_ON	0x1
 #define UF_IRQ_DISABLED	0x2
 #define UF_RX_PENDING	0x4
+#define UF_TX_PENDING	0x8
 
 struct nf10_adapter {
 	struct napi_struct napi;
@@ -75,7 +76,8 @@ struct nf10_adapter {
 	struct cdev cdev;
 	u32 user_flags;
 	unsigned int nr_user_mmap;
-	wait_queue_head_t wq_user_intr;
+	wait_queue_head_t user_rx_wq;
+	wait_queue_head_t user_tx_wq;
 	/* AXI register interface */
 	dma_addr_t axi_completion_dma_addr;
 	void *axi_completion_kern_addr;

@@ -556,7 +556,7 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 	unsigned long poll_cnt;
 	union lbuf_header lh;
 
-	if (nf10_user_rx_callback(adapter)) {
+	if (nf10_user_callback(adapter, 1)) {
 		*work_done = 0;
 		return;
 	}
@@ -792,6 +792,8 @@ static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 	struct sk_buff *skb;
 	int i;
 
+	if (nf10_user_callback(adapter, 0))
+		return 1;	/* forcing napi to end */
 again:
 	rmb();
 	gc_addr = get_tx_last_gc_addr();

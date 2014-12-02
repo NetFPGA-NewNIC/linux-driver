@@ -74,6 +74,7 @@ struct packet_info {
 	uint32_t buflen;
 	uint32_t batchlen;
 	uint64_t count;
+	uint32_t sync_flag;
 	struct packet pkt_data;
 };
 
@@ -163,7 +164,7 @@ int main(int argc, char *argv[])
 		1,		/* count */
 	};
 
-	while ((opt = getopt(argc, argv, "s:d:S:D:n:l:b:B:")) != -1) {
+	while ((opt = getopt(argc, argv, "s:d:S:D:n:l:b:B:f:")) != -1) {
 		switch(opt) {
 		case 's':
 			pinfo.src_ip = optarg;
@@ -193,6 +194,9 @@ int main(int argc, char *argv[])
 		case 'B':
 			pinfo.batchlen = atoi(optarg) << 10;	/* in KB */
 			break;
+		case 'f':
+			pinfo.sync_flag = atoi(optarg);
+			break;
 		}
 	}
 	if (pinfo.batchlen > pinfo.buflen)
@@ -202,11 +206,11 @@ int main(int argc, char *argv[])
 	init_packet(&pinfo);
 
 	for (i = 0; i < pinfo.count; i++) {
-		batched_size = lbufnet_write(&pinfo.pkt_data, pinfo.len, SF_BUSY_BLOCK);
+		batched_size = lbufnet_write(&pinfo.pkt_data, pinfo.len, pinfo.sync_flag);
 		if (batched_size >= pinfo.batchlen)
-			lbufnet_output(SF_BUSY_BLOCK);
+			lbufnet_output(pinfo.sync_flag);
 	}
-	lbufnet_output(SF_BUSY_BLOCK);
+	lbufnet_output(pinfo.sync_flag);
 	printf("%d packets sent\n", i);
 
 	return 0;

@@ -433,7 +433,8 @@ static int nf10_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	/* 5. init user-level access */
 	nf10_init_fops(adapter);
-	init_waitqueue_head(&adapter->wq_user_intr);
+	init_waitqueue_head(&adapter->user_rx_wq);
+	init_waitqueue_head(&adapter->user_tx_wq);
 
 	netif_info(adapter, probe, default_netdev(adapter),
 		   "probe is done successfully\n");

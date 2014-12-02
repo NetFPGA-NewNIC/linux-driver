@@ -76,6 +76,6 @@
 
 extern int nf10_init_fops(struct nf10_adapter *adapter);
 extern int nf10_remove_fops(struct nf10_adapter *adapter);
-extern bool nf10_user_rx_callback(struct nf10_adapter *adapter);
+extern bool nf10_user_callback(struct nf10_adapter *adapter, int rx);
 #endif
 #endif
