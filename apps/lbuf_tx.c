@@ -204,9 +204,9 @@ int main(int argc, char *argv[])
 	for (i = 0; i < pinfo.count; i++) {
 		batched_size = lbufnet_write(&pinfo.pkt_data, pinfo.len, SF_BUSY_BLOCK);
 		if (batched_size >= pinfo.batchlen)
-			lbufnet_output();
+			lbufnet_output(SF_BUSY_BLOCK);
 	}
-	lbufnet_output();
+	lbufnet_output(SF_BUSY_BLOCK);
 	printf("%d packets sent\n", i);
 
 	return 0;

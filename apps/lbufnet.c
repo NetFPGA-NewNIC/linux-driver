@@ -141,8 +141,8 @@ int lbufnet_init(unsigned int _tx_lbuf_size)
 			return -1;
 		}
 		tx_avail[i] = 1;
-		debug("TX lbuf[%d] is mmaped to vaddr=%p w/ size=%u\n",
-		      i, tx_lbuf[i], _tx_lbuf_size);
+		debug("TX lbuf[%d] is mmaped to vaddr=%p w/ size=%u (dma_addr=%p)\n",
+		      i, tx_lbuf[i], _tx_lbuf_size, (void *)ld->tx_dma_addr[i]);
 	}
 
 	tx_lbuf_size = _tx_lbuf_size;
@@ -216,11 +216,7 @@ wait_to_start_recv:
 				move_to_next_lbuf();
 				continue;
 			}
-			if (poll_cnt++ > LBUF_POLL_THRESH) {
-				ld->rx_writeback = dword_idx;
-				goto wait_rx;
-			}
-			goto wait_to_start_recv;
+			goto wait_rx;
 		}
 		if (!LBUF_IS_PKT_VALID(port_num, pkt_len)) {
 			fprintf(stderr, "Error: rx_idx=%d lbuf contains invalid pkt len=%u\n",
