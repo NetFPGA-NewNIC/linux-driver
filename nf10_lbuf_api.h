@@ -88,11 +88,7 @@ struct lbuf_user {
 	unsigned int rx_cons;
 
 	unsigned long long tx_dma_addr[NR_TX_USER_LBUF];
-
-	/* writeback values for tx/rx: written back to HW to let HW
-	 * know the last status seen by SW */
-	unsigned long long tx_writeback, rx_writeback;
-
+	unsigned long long last_gc_addr;
 };
 
 #define NR_RESERVED_DWORDS		32

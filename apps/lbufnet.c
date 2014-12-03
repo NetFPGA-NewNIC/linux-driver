@@ -63,7 +63,7 @@ void *tx_completion;
 static void *rx_lbuf[NR_SLOT];
 static void *tx_lbuf[NR_TX_USER_LBUF];
 static int initialized;
-static int prev_nr_drops;
+static unsigned int prev_nr_drops;
 static union lbuf_header lh;
 static unsigned int tx_lbuf_size;
 static int ref_prod;
@@ -71,11 +71,17 @@ static int ref_cons;
 static uint32_t tx_offset;
 static uint8_t tx_avail[NR_TX_USER_LBUF];
 static lbufnet_input_cb input_cb;
+static lbufnet_exit_cb exit_cb;
 
 int lbufnet_exit(void);
 static void lbufnet_finish(int sig)
 {
-	printf("Dropped packets=%u\n", lh.nr_drops - prev_nr_drops);
+	if (exit_cb) {
+		struct lbufnet_stat s = {
+			.nr_drops = lh.nr_drops - prev_nr_drops,
+		};
+		exit_cb(&s);
+	}
 	lbufnet_exit();
 	exit(0);
 }
@@ -105,7 +111,7 @@ int lbufnet_init(unsigned int _tx_lbuf_size)
 	debug("\ttx_dma_addr\n");
 	for (i = 0; i < NR_TX_USER_LBUF; i++)
 		debug("\t\t[%d]=%p\n", i, (void *)ld->tx_dma_addr[i]);
-	debug("\ttx_writeback=0x%llx rx_writeback=0x%llx\n", ld->tx_writeback, ld->rx_writeback);
+	debug("\tlast_gc_addr=0x%llx\n", ld->last_gc_addr);
 
 	tx_completion = mmap(NULL, 1 << PAGE_SHIFT, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (tx_completion == MAP_FAILED) {
@@ -129,17 +135,18 @@ int lbufnet_init(unsigned int _tx_lbuf_size)
 	LBUF_GET_HEADER(rx_lbuf[ld->rx_idx], lh);
 	prev_nr_drops = lh.nr_drops;
 
-	for (i = 0; i < NR_TX_USER_LBUF; i++) {
-		tx_lbuf[i] = mmap(NULL, _tx_lbuf_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-		if (tx_lbuf[i] == MAP_FAILED) {
-			perror("mmap");
-			return -1;
+	if (_tx_lbuf_size) {
+		for (i = 0; i < NR_TX_USER_LBUF; i++) {
+			tx_lbuf[i] = mmap(NULL, _tx_lbuf_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+			if (tx_lbuf[i] == MAP_FAILED) {
+				perror("mmap");
+				return -1;
+			}
+			tx_avail[i] = 1;
+			debug("TX lbuf[%d] is mmaped to vaddr=%p w/ size=%u (dma_addr=%p)\n",
+					i, tx_lbuf[i], _tx_lbuf_size, (void *)ld->tx_dma_addr[i]);
 		}
-		tx_avail[i] = 1;
-		debug("TX lbuf[%d] is mmaped to vaddr=%p w/ size=%u (dma_addr=%p)\n",
-		      i, tx_lbuf[i], _tx_lbuf_size, (void *)ld->tx_dma_addr[i]);
 	}
-
 	tx_lbuf_size = _tx_lbuf_size;
 	initialized = 1;
 
@@ -158,9 +165,14 @@ int lbufnet_exit(void)
 	return 0;
 }
 
-int lbufnet_register_callback(lbufnet_input_cb cb)
+int lbufnet_register_input_callback(lbufnet_input_cb cb)
 {
 	input_cb = cb;
+}
+
+int lbufnet_register_exit_callback(lbufnet_exit_cb cb)
+{
+	exit_cb = cb;
 }
 
 static inline void move_to_next_lbuf(void *buf_addr)
@@ -263,8 +275,13 @@ int lbufnet_output(int sync_flags)
 		debug("Error: lbuf is not initialized\n");
 		return -1;
 	}
+	if (tx_lbuf_size == 0) {
+		debug("Error: tx lbuf is not initialized\n");
+		return -1;
+	}
 	if (tx_offset == 0)
 		return -1;
+
 	while(LBUF_TX_COMPLETION(tx_completion, ld->tx_idx) != TX_AVAIL) {
 		if (sync_flags == SF_NON_BLOCK)
 			return 0;
@@ -289,9 +306,9 @@ static void clean_tx(void)
 {
 	int last = 0;
 	uint64_t gc_addr = LBUF_GC_ADDR(tx_completion);
-	debug("%s: gc addr=%p tx_writeback=%p\n",
-	      __func__, (void *)gc_addr, (void *)ld->tx_writeback);
-	if (gc_addr == ld->tx_writeback)
+	debug("%s: gc addr=%p last_gc_addr=%p\n",
+	      __func__, (void *)gc_addr, (void *)ld->last_gc_addr);
+	if (gc_addr == ld->last_gc_addr)
 		return;
 	do {
 		last = gc_addr > ld->tx_dma_addr[ref_cons] &&
@@ -301,7 +318,7 @@ static void clean_tx(void)
 		      __func__, ref_cons, ref_prod, (void *)gc_addr, last);
 		inc_txbuf_ref(ref_cons);
 	} while(!last && ref_cons != ref_prod);
-	ld->tx_writeback = gc_addr;
+	ld->last_gc_addr = gc_addr;
 }
 
 unsigned int lbufnet_write(void *data, unsigned int len, int sync_flags)
@@ -312,6 +329,10 @@ unsigned int lbufnet_write(void *data, unsigned int len, int sync_flags)
 
 	if (!initialized) {
 		debug("Error: lbuf is not initialized\n");
+		return -1;
+	}
+	if (tx_lbuf_size == 0) {
+		debug("Error: tx lbuf is not initialized\n");
 		return -1;
 	}
 avail_check:

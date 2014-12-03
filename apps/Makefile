@@ -1,7 +1,7 @@
 driver_dir	:= ../
 DRIVER_DIR	:= $(realpath $(driver_dir))
 DRIVER_HEADERS	:= nf10_lbuf_api.h nf10_user.h
-PROGRAMS	:= lbuf_tx
+PROGRAMS	:= lbuf_tx lbuf_rx
 
 ifeq ($(NAAS),y)
 	CONFIG_NR_PORTS := 1
@@ -29,10 +29,11 @@ nf10_user.h:
 get_driver_header: $(DRIVER_HEADERS)
 
 lbufnet.o: $(DRIVER_HEADERS)
-
 lbuf_tx.o: $(DRIVER_HEADERS)
+lbuf_rx.o: $(DRIVER_HEADERS)
 
 lbuf_tx: lbuf_tx.o lbufnet.o
+lbuf_rx: lbuf_rx.o lbufnet.o
 
 clean:
 	rm -f $(PROGRAMS) $(DRIVER_HEADERS) *.o
