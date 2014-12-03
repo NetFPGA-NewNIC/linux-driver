@@ -50,6 +50,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/time.h>
@@ -69,10 +70,10 @@ void show_stat(struct lbufnet_stat *s)
 	timersub(&end_tv, &start_tv, &elapsed_tv);
 	elapsed_sec = elapsed_tv.tv_sec + ((double)elapsed_tv.tv_usec / 1000000);
 
-	printf("\nReceived packets = %lu (total=%luB avg=%luB drops=%u)\n",
+	printf("\nReceived packets = %lu (total=%luB avg=%luB drops=%u polls=%lu)\n",
 		total_rx_packets, total_rx_bytes,
 		total_rx_packets ? total_rx_bytes / total_rx_packets : 0,
-		s->nr_drops);
+		s->nr_drops, s->nr_polls);
 	printf("Elapsed time = %.6lf sec\n", elapsed_sec);
 	if (elapsed_sec > 0)
 		printf("Throughput = %.2lf pps (%.2lf Mb/sec)\n",

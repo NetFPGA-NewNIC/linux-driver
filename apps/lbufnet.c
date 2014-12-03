@@ -72,15 +72,14 @@ static uint32_t tx_offset;
 static uint8_t tx_avail[NR_TX_USER_LBUF];
 static lbufnet_input_cb input_cb;
 static lbufnet_exit_cb exit_cb;
+struct lbufnet_stat stat;
 
 int lbufnet_exit(void);
 static void lbufnet_finish(int sig)
 {
 	if (exit_cb) {
-		struct lbufnet_stat s = {
-			.nr_drops = lh.nr_drops - prev_nr_drops,
-		};
-		exit_cb(&s);
+		stat.nr_drops = lh.nr_drops - prev_nr_drops;
+		exit_cb(&stat);
 	}
 	lbufnet_exit();
 	exit(0);
@@ -220,7 +219,6 @@ wait_rx:
 		poll_cnt = 0;
 		dword_idx = ld->rx_cons;
 		buf_addr = rx_lbuf[ld->rx_idx];
-wait_to_start_recv:
 		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
 		pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
 
@@ -248,8 +246,10 @@ wait_to_end_recv:
 		}
 		else {
 			LBUF_GET_HEADER(buf_addr, lh);
-			if ((lh.nr_qwords << 1) < next_dword_idx - NR_RESERVED_DWORDS)
+			if ((lh.nr_qwords << 1) < next_dword_idx - NR_RESERVED_DWORDS) {
+				stat.nr_polls++;
 				goto wait_to_end_recv;
+			}
 			input_callback(pkt_addr, pkt_len);
 			if (LBUF_CLOSED(next_dword_idx, lh)) {
 				move_to_next_lbuf(buf_addr);
