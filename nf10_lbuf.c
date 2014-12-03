@@ -792,13 +792,14 @@ static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 	struct sk_buff *skb;
 	int i;
 
-	if (nf10_user_callback(adapter, 0))
-		return 1;	/* forcing napi to end */
 again:
 	rmb();
 	gc_addr = get_tx_last_gc_addr();
 	if (gc_addr == get_tx_writeback())
 		goto out;
+
+	if (nf10_user_callback(adapter, 0))
+		return 1;	/* forcing napi to end */
 
 	if (!addr_in_lbuf(tx_kern_desc(), gc_addr)) {
 		/* FIXME: add a callback */
