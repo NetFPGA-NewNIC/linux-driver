@@ -189,23 +189,41 @@ static inline void move_to_next_lbuf(void *buf_addr)
 	ld->rx_cons = NR_RESERVED_DWORDS;
 }
 
-static inline void input_callback(void *pkt_addr, uint32_t pkt_len)
+static inline void deliver_packet(void *pkt_addr, uint32_t pkt_len, uint64_t *rx_packets)
 {
 	input_cb(pkt_addr, pkt_len);
 	memset(pkt_addr - LBUF_TX_METADATA_SIZE, 0, ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE);
+	(*rx_packets)++;
+}
+
+static void clean_tx(void)
+{
+	int last = 0;
+	uint64_t gc_addr = LBUF_GC_ADDR(tx_completion);
+	if (gc_addr == ld->last_gc_addr)
+		return;
+	do {
+		last = gc_addr > ld->tx_dma_addr[ref_cons] &&
+		       gc_addr <= ld->tx_dma_addr[ref_cons] + tx_lbuf_size;
+		tx_avail[ref_cons] = 1;
+		dprintf("%s: clean ref_cons=%d ref_prod=%d by gc_addr %p (last=%d)\n",
+		      __func__, ref_cons, ref_prod, (void *)gc_addr, last);
+		inc_txbuf_ref(ref_cons);
+	} while(!last && ref_cons != ref_prod);
+	ld->last_gc_addr = gc_addr;
 }
 
 /* TODO: multi-port support */
-int lbufnet_input(int sync_flags)
+int lbufnet_input(unsigned long nr_packets, int sync_flags)
 {
 	void *buf_addr;
 	unsigned int dword_idx, next_dword_idx;
 	int port_num;
 	uint32_t pkt_len, next_pkt_len;
 	void *pkt_addr;
-	struct pollfd pfd = { .fd = fd, .events = POLLIN };
+	struct pollfd pfd = { .fd = fd, .events = POLLIN | POLLOUT };
 	int n;
-	unsigned long poll_cnt;
+	unsigned long rx_packets = 0;
 
 	if (!initialized) {
 		eprintf("Error: lbuf is not initialized\n");
@@ -224,11 +242,12 @@ wait_rx:
 		do {
 			n = poll(&pfd, 1, 1000);
 			dprintf("Waiting for RX packets (n=%d, revents=%x)\n", n, pfd.revents);
-		} while (n <= 0 || pfd.revents & POLLERR);
+			if (pfd.revents & POLLOUT)
+				clean_tx();
+		} while (n <= 0 || pfd.revents & POLLERR || !(pfd.revents & POLLIN));
 	}
 	dprintf("Start receiving packets...\n");
 	do {
-		poll_cnt = 0;
 		dword_idx = ld->rx_cons;
 		buf_addr = rx_lbuf[ld->rx_idx];
 		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
@@ -255,7 +274,7 @@ wait_rx:
 wait_to_end_recv:
 		next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
 		if (next_pkt_len > 0) {
-			input_callback(pkt_addr, pkt_len);
+			deliver_packet(pkt_addr, pkt_len, &rx_packets);
 			ld->rx_cons = next_dword_idx;
 		}
 		else {
@@ -264,7 +283,7 @@ wait_to_end_recv:
 				stat.nr_polls++;
 				goto wait_to_end_recv;
 			}
-			input_callback(pkt_addr, pkt_len);
+			deliver_packet(pkt_addr, pkt_len, &rx_packets);
 			if (LBUF_CLOSED(next_dword_idx, lh)) {
 				move_to_next_lbuf(buf_addr);
 				continue;
@@ -276,9 +295,9 @@ wait_to_end_recv:
 		}
 		if (ld->rx_cons >= (LBUF_RX_SIZE >> 2))
 			move_to_next_lbuf(buf_addr);
-	} while(1);
+	} while(nr_packets == 0 || rx_packets < nr_packets);
 
-	return 1;	/* never return unless non-block */
+	return rx_packets;
 }
 
 int lbufnet_flush(int sync_flags)
@@ -308,6 +327,7 @@ int lbufnet_flush(int sync_flags)
 		do {
 			n = poll(&pfd, 1, 1000);
 		} while (n <= 0 || pfd.revents & POLLERR);
+		clean_tx();
 	}
 	tx_avail[ref_prod] = 0;
 	ioctl(fd, NF10_IOCTL_CMD_XMIT, NF10_IOCTL_ARG_XMIT(ref_prod, tx_offset));
@@ -316,23 +336,6 @@ int lbufnet_flush(int sync_flags)
 	tx_offset = 0;
 
 	return out_bytes;
-}
-
-static void clean_tx(void)
-{
-	int last = 0;
-	uint64_t gc_addr = LBUF_GC_ADDR(tx_completion);
-	if (gc_addr == ld->last_gc_addr)
-		return;
-	do {
-		last = gc_addr > ld->tx_dma_addr[ref_cons] &&
-		       gc_addr <= ld->tx_dma_addr[ref_cons] + tx_lbuf_size;
-		tx_avail[ref_cons] = 1;
-		dprintf("%s: clean ref_cons=%d ref_prod=%d by gc_addr %p (last=%d)\n",
-		      __func__, ref_cons, ref_prod, (void *)gc_addr, last);
-		inc_txbuf_ref(ref_cons);
-	} while(!last && ref_cons != ref_prod);
-	ld->last_gc_addr = gc_addr;
 }
 
 int lbufnet_write(void *data, unsigned int len, int sync_flags)
@@ -350,8 +353,8 @@ int lbufnet_write(void *data, unsigned int len, int sync_flags)
 		return -1;
 	}
 avail_check:
+	clean_tx();
 	while(!tx_avail[ref_prod]) {
-		clean_tx();
 		if (!tx_avail[ref_prod]) {
 			if (sync_flags == SF_NON_BLOCK)
 				return 0;
@@ -363,6 +366,7 @@ avail_check:
 				n = poll(&pfd, 1, 1000);
 			} while (n <= 0 || pfd.revents & POLLERR);
 		}
+		clean_tx();
 	}
 	if (!LBUF_HAS_TX_ROOM(tx_lbuf_size, tx_offset, len)) {
 		lbufnet_flush(sync_flags);
