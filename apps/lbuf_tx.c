@@ -149,14 +149,15 @@ int main(int argc, char *argv[])
 	unsigned int batched_size;
 	int opt;
 	struct packet_info pinfo = {
-		"11.0.0.1",
-		"12.0.0.1",
-		"00:00:00:00:00:00",
-		"ff:ff:ff:ff:ff:ff",
-		60,		/* packet len */
-		2 << 20,	/* buflen: 2MB */
-		2 << 20,	/* batchlen: 2MB */
-		1,		/* count */
+		.src_ip = "11.0.0.1",
+		.dst_ip = "12.0.0.1",
+		.src_mac = "00:00:00:00:00:00",
+		.dst_mac = "ff:ff:ff:ff:ff:ff",
+		.len = 60,
+		.buflen = 2 << 20,	/* 2MB */
+		.batchlen = 2 << 20,	/* 2MB */
+		.count = 1,
+		.sync_flag = SF_BLOCK,
 	};
 
 	while ((opt = getopt(argc, argv, "s:d:S:D:n:l:b:B:f:")) != -1) {
