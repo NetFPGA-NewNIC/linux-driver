@@ -95,6 +95,6 @@ int main(int argc, char *argv[])
 	lbufnet_init(0);
 	lbufnet_register_input_callback(input_handler);
 	lbufnet_register_exit_callback(show_stat);
-	lbufnet_input();
+	lbufnet_input(SF_BLOCK);
 	return 0;
 }

@@ -16,7 +16,11 @@ ifeq ($(CONFIG_NO_TIMESTAMP),y)
 CFLAGS += -DCONFIG_NO_TIMESTAMP
 endif
 
-CFLAGS += -g -O2
+ifeq ($(DEBUG),y)
+CFLAGS += -g -DDEBUG
+endif
+
+CFLAGS += -O2
 
 all: get_driver_header $(PROGRAMS)
 

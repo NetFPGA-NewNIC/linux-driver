@@ -54,8 +54,15 @@
 #include "lbufnet.h"
 
 #define DEV_FNAME	"/dev/" NF10_DRV_NAME
-#define debug(format, arg...)	\
+#ifdef DEBUG
+#define dprintf(format, arg...)	\
 	do { printf(NF10_DRV_NAME ": " format, ##arg); } while(0)
+#else
+#define dprintf
+#endif
+
+#define eprintf(format, arg...)	\
+	do { fprintf(stderr, NF10_DRV_NAME ": " format, ##arg); } while(0)
 
 static int fd;
 static struct lbuf_user *ld;	/* lbuf descriptor */
@@ -97,30 +104,30 @@ int lbufnet_init(unsigned int _tx_lbuf_size)
 		perror("ioctl init");
 		return -1;
 	}
-	debug("initialized for direct user access\n");
+	dprintf("initialized for direct user access\n");
 
 	ld = mmap(NULL, 1 << PAGE_SHIFT, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (ld == MAP_FAILED) {
 		perror("mmap");
 		return -1;
 	}
-	debug("DMA metadata is mmaped to vaddr=%p\n", ld);
-	debug("\ttx_idx=%u rx_idx=%u\n", ld->tx_idx, ld->rx_idx);
-	debug("\trx_cons=%u\n", ld->rx_cons);
-	debug("\ttx_dma_addr\n");
+	dprintf("DMA metadata is mmaped to vaddr=%p\n", ld);
+	dprintf("\ttx_idx=%u rx_idx=%u\n", ld->tx_idx, ld->rx_idx);
+	dprintf("\trx_cons=%u\n", ld->rx_cons);
+	dprintf("\ttx_dma_addr\n");
 	for (i = 0; i < NR_TX_USER_LBUF; i++)
-		debug("\t\t[%d]=%p\n", i, (void *)ld->tx_dma_addr[i]);
-	debug("\tlast_gc_addr=0x%llx\n", ld->last_gc_addr);
+		dprintf("\t\t[%d]=%p\n", i, (void *)ld->tx_dma_addr[i]);
+	dprintf("\tlast_gc_addr=0x%llx\n", ld->last_gc_addr);
 
 	tx_completion = mmap(NULL, 1 << PAGE_SHIFT, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (tx_completion == MAP_FAILED) {
 		perror("mmap");
 		return -1;
 	}
-	debug("DMA tx completion area is mmaped to vaddr=%p\n", tx_completion);
+	dprintf("DMA tx completion area is mmaped to vaddr=%p\n", tx_completion);
 	for (i = 0; i < NR_SLOT; i++)
-		debug("\tcompletion[%d]=%x\n", i, LBUF_TX_COMPLETION(tx_completion, i));
-	debug("\tgc_addr=%p\n", (void *)LBUF_GC_ADDR(tx_completion));
+		dprintf("\tcompletion[%d]=%x\n", i, LBUF_TX_COMPLETION(tx_completion, i));
+	dprintf("\tgc_addr=%p\n", (void *)LBUF_GC_ADDR(tx_completion));
 
 	for (i = 0; i < NR_SLOT; i++) {
 		rx_lbuf[i] = mmap(NULL, LBUF_RX_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -128,7 +135,7 @@ int lbufnet_init(unsigned int _tx_lbuf_size)
 			perror("mmap");
 			return -1;
 		}
-		debug("RX lbuf[%d] is mmaped to vaddr=%p w/ size=%lu\n",
+		dprintf("RX lbuf[%d] is mmaped to vaddr=%p w/ size=%lu\n",
 		      i, rx_lbuf[i], LBUF_RX_SIZE);
 	}
 	LBUF_GET_HEADER(rx_lbuf[ld->rx_idx], lh);
@@ -142,7 +149,7 @@ int lbufnet_init(unsigned int _tx_lbuf_size)
 				return -1;
 			}
 			tx_avail[i] = 1;
-			debug("TX lbuf[%d] is mmaped to vaddr=%p w/ size=%u (dma_addr=%p)\n",
+			dprintf("TX lbuf[%d] is mmaped to vaddr=%p w/ size=%u (dma_addr=%p)\n",
 					i, tx_lbuf[i], _tx_lbuf_size, (void *)ld->tx_dma_addr[i]);
 		}
 	}
@@ -189,7 +196,7 @@ static inline void input_callback(void *pkt_addr, uint32_t pkt_len)
 }
 
 /* TODO: multi-port support */
-void lbufnet_input(void)
+int lbufnet_input(int sync_flags)
 {
 	void *buf_addr;
 	unsigned int dword_idx, next_dword_idx;
@@ -201,20 +208,25 @@ void lbufnet_input(void)
 	unsigned long poll_cnt;
 
 	if (!initialized) {
-		debug("Error: lbuf is not initialized\n");
-		return;
+		eprintf("Error: lbuf is not initialized\n");
+		return -1;
 	}
 	if (!input_cb) {
-		debug("Error: input callback is not initialized\n");
-		return;
+		eprintf("Error: input callback is not initialized\n");
+		return -1;
+	}
+	if (sync_flags != SF_BLOCK && sync_flags != SF_NON_BLOCK && sync_flags != SF_BUSY_BLOCK) {
+		eprintf("Error: undefined sync flags\n");
+		return -1;
 	}
 wait_rx:
-	do {
-		n = poll(&pfd, 1, 1000);
-		debug("Waiting for RX packets (n=%d, revents=%x)\n", n, pfd.revents);
-	} while(n <= 0 || pfd.revents & POLLERR);
-
-	debug("Start receiving packets...\n");
+	if (sync_flags == SF_BLOCK) {
+		do {
+			n = poll(&pfd, 1, 1000);
+			dprintf("Waiting for RX packets (n=%d, revents=%x)\n", n, pfd.revents);
+		} while (n <= 0 || pfd.revents & POLLERR);
+	}
+	dprintf("Start receiving packets...\n");
 	do {
 		poll_cnt = 0;
 		dword_idx = ld->rx_cons;
@@ -229,6 +241,8 @@ wait_rx:
 				move_to_next_lbuf(buf_addr);
 				continue;
 			}
+			if (sync_flags == SF_NON_BLOCK)
+				return 0;
 			goto wait_rx;
 		}
 		if (!LBUF_IS_PKT_VALID(port_num, pkt_len)) {
@@ -263,20 +277,22 @@ wait_to_end_recv:
 		if (ld->rx_cons >= (LBUF_RX_SIZE >> 2))
 			move_to_next_lbuf(buf_addr);
 	} while(1);
+
+	return 1;	/* never return unless non-block */
 }
 
-int lbufnet_output(int sync_flags)
+int lbufnet_flush(int sync_flags)
 {
 	int out_bytes;
 	struct pollfd pfd = { .fd = fd, .events = POLLOUT };
 	int n;
 
 	if (!initialized) {
-		debug("Error: lbuf is not initialized\n");
+		eprintf("Error: lbuf is not initialized\n");
 		return -1;
 	}
 	if (tx_lbuf_size == 0) {
-		debug("Error: tx lbuf is not initialized\n");
+		eprintf("Error: tx lbuf is not initialized\n");
 		return -1;
 	}
 	if (tx_offset == 0)
@@ -306,33 +322,31 @@ static void clean_tx(void)
 {
 	int last = 0;
 	uint64_t gc_addr = LBUF_GC_ADDR(tx_completion);
-	debug("%s: gc addr=%p last_gc_addr=%p\n",
-	      __func__, (void *)gc_addr, (void *)ld->last_gc_addr);
 	if (gc_addr == ld->last_gc_addr)
 		return;
 	do {
 		last = gc_addr > ld->tx_dma_addr[ref_cons] &&
 		       gc_addr <= ld->tx_dma_addr[ref_cons] + tx_lbuf_size;
 		tx_avail[ref_cons] = 1;
-		debug("%s: clean ref_cons=%d ref_prod=%d by gc_addr %p (last=%d)\n",
+		dprintf("%s: clean ref_cons=%d ref_prod=%d by gc_addr %p (last=%d)\n",
 		      __func__, ref_cons, ref_prod, (void *)gc_addr, last);
 		inc_txbuf_ref(ref_cons);
 	} while(!last && ref_cons != ref_prod);
 	ld->last_gc_addr = gc_addr;
 }
 
-unsigned int lbufnet_write(void *data, unsigned int len, int sync_flags)
+int lbufnet_write(void *data, unsigned int len, int sync_flags)
 {
 	void *buf_addr;
 	struct pollfd pfd = { .fd = fd, .events = POLLOUT };
 	int n;
 
 	if (!initialized) {
-		debug("Error: lbuf is not initialized\n");
+		eprintf("Error: lbuf is not initialized\n");
 		return -1;
 	}
 	if (tx_lbuf_size == 0) {
-		debug("Error: tx lbuf is not initialized\n");
+		eprintf("Error: tx lbuf is not initialized\n");
 		return -1;
 	}
 avail_check:
@@ -351,10 +365,9 @@ avail_check:
 		}
 	}
 	if (!LBUF_HAS_TX_ROOM(tx_lbuf_size, tx_offset, len)) {
-		lbufnet_output(sync_flags);
+		lbufnet_flush(sync_flags);
 		goto avail_check;
 	}
-	//debug("ref=%d off=%u len=%u\n", ref_prod, tx_offset, len);
 	/* now tx lbuf avaialable */
 	buf_addr = tx_lbuf[ref_prod] + tx_offset;
 	buf_addr = LBUF_CUR_TX_ADDR(buf_addr, 0, len);
@@ -364,12 +377,10 @@ avail_check:
 	return tx_offset;
 }
 
-#if 0
-int main(int argc, char *argv[])
+int lbufnet_output(void *data, unsigned len, int sync_flags)
 {
-	lbufnet_init(2 << 20);
-	lbufnet_input();
-
-	return 0;
+	int ret;
+	if ((ret = lbufnet_write(data, len, sync_flags)) > 0)
+		return lbufnet_flush(sync_flags);
+	return ret;
 }
-#endif
