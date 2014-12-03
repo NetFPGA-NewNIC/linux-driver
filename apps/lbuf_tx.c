@@ -38,14 +38,9 @@
 */
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <unistd.h>
-#include <sys/mman.h>
 #include <sys/ioctl.h>
-#include <fcntl.h>
 #include <stdint.h>
-#include <signal.h>
-#include <sys/time.h>
 #include <string.h>
 #include <net/ethernet.h>
 #include <netinet/ether.h>
