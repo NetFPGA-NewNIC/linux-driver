@@ -92,9 +92,20 @@ void input_handler(void *data, unsigned int len)
 
 int main(int argc, char *argv[])
 {
+	int sync_flag = SF_BLOCK;
+	int opt;
+
+	while ((opt = getopt(argc, argv, "f:")) != -1) {
+		switch(opt) {
+		case 'f':
+			sync_flag = atoi(optarg);
+			break;
+		}
+	}
 	lbufnet_init(0);
 	lbufnet_register_input_callback(input_handler);
 	lbufnet_register_exit_callback(show_stat);
-	lbufnet_input(0, SF_BLOCK);
+	lbufnet_input(0, sync_flag);
+
 	return 0;
 }
