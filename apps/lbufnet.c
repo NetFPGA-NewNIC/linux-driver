@@ -84,6 +84,15 @@ static lbufnet_input_cb input_cb;
 static lbufnet_exit_cb exit_cb;
 struct lbufnet_stat stat;
 
+static inline uint64_t rdtsc(void)
+{       
+	unsigned int low, high; 
+
+	asm volatile("rdtsc" : "=a" (low), "=d" (high));
+
+	return low | ((uint64_t)high) << 32;
+}
+
 int lbufnet_exit(void);
 static void lbufnet_finish(int sig)
 {
@@ -322,9 +331,11 @@ int lbufnet_flush(int sync_flags)
 	while(LBUF_TX_COMPLETION(tx_completion, ld->tx_idx) != TX_AVAIL) {
 		if (sync_flags == SF_NON_BLOCK)
 			return 0;
-		if (sync_flags == SF_BUSY_BLOCK)
+		if (sync_flags == SF_BUSY_BLOCK) {
+			clean_tx();
 			continue;
-		if (sync_flags != SF_BLOCK)
+		}
+		if (unlikely(sync_flags != SF_BLOCK))
 			return -1;
 		do {
 			n = poll(&pfd, 1, 1000);
