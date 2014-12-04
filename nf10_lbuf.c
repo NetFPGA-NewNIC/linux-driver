@@ -690,10 +690,10 @@ static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
 	nf10_writeq(adapter, tx_addr_off(idx), dma_addr);
 	nf10_writel(adapter, tx_stat_off(idx), nr_qwords);
 
-	netif_info(adapter, tx_queued, default_netdev(adapter),
-		   "\trqtx[%u]: c%d l=%u prod=[%u:%u] dma_addr=%p/skbqlen=%u qw=%u\n",
-		   idx, smp_processor_id(), prod_pvt - prod, prod, prod_pvt,
-		   (void *)dma_addr, skb_queue_len(&desc->skbq), nr_qwords);
+	netif_dbg(adapter, tx_queued, default_netdev(adapter),
+		  "\trqtx[%u]: c%d l=%u prod=[%u:%u] dma_addr=%p/skbqlen=%u qw=%u\n",
+		  idx, smp_processor_id(), prod_pvt - prod, prod, prod_pvt,
+		  (void *)dma_addr, skb_queue_len(&desc->skbq), nr_qwords);
 #if 0
 	print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_NONE,
 		       16, 1, desc->kern_addr + prod, 128, true);
