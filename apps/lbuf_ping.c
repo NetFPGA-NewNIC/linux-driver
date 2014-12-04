@@ -110,7 +110,6 @@ static uint16_t checksum(const void *data, uint16_t len, uint32_t sum)
 	return sum;
 }
 
-uint16_t sequence;
 uint32_t base_sum;
 void init_packet(struct ping_info *pinfo)
 {
@@ -171,7 +170,7 @@ void input_handler(void *data, unsigned int len)
 		printf("%lu bytes from %s: icmp_req=%u ttl=%u time=%.3lf ms\n",
 			len - sizeof(struct ether_header) - sizeof(struct iphdr),
 			inet_ntoa(pkt->iphdr.ip_src),
-			ntohs(pkt->icmphdr.un.echo.sequence) + 1,
+			ntohs(pkt->icmphdr.un.echo.sequence),
 			pkt->iphdr.ip_ttl,
 			elapsed_ms);
 	}
@@ -199,6 +198,10 @@ void input_handler(void *data, unsigned int len)
 		pkt->icmphdr.checksum = wrapsum(checksum(&pkt->icmphdr, icmplen, 0));
 
 		lbufnet_output(data, len, pinfo.sync_flag);
+		printf("pong for ping request %lu bytes from %s: icmp_req=%u\n",
+			len - sizeof(struct ether_header) - sizeof(struct iphdr),
+			inet_ntoa(pkt->iphdr.ip_src),
+			ntohs(pkt->icmphdr.un.echo.sequence));
 	}
 }
 
@@ -243,6 +246,8 @@ int main(int argc, char *argv[])
 	lbufnet_init(4096);	/* 4KB tx buffer */
 	lbufnet_register_input_callback(input_handler);
 	if (pinfo.mode == MODE_PING) {
+		uint16_t sequence;
+
 		if (!pinfo.src_ip || !pinfo.src_mac || !pinfo.dst_ip || !pinfo.dst_mac) {
 			fprintf(stderr, "ping mode requires src and dst ip/mac addresses\n");
 			return -1;
@@ -252,6 +257,7 @@ int main(int argc, char *argv[])
 			pinfo.datalen + sizeof(struct icmphdr) + sizeof(struct iphdr));
 
 		init_packet(&pinfo);
+		sequence = 1;
 		do {
 			pinfo.pkt_data.icmphdr.un.echo.sequence = htons(sequence);
 			pinfo.pkt_data.icmphdr.checksum = wrapsum(base_sum + sequence);
@@ -262,8 +268,10 @@ int main(int argc, char *argv[])
 			sequence++;
 		} while(pinfo.count == 0 || sequence <= pinfo.count);
 	}
-	else if (pinfo.mode == MODE_PONG)
+	else if (pinfo.mode == MODE_PONG) {
+		printf("PONG waits PING...\n");
 		lbufnet_input(0, pinfo.sync_flag);
+	}
 
 	return 0;
 }
