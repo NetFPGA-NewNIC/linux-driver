@@ -563,9 +563,7 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 		dword_idx = get_rx_cons();
 		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
 		pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
-#if 0
-			pr_debug("i=%u l=%u\n", dword_idx, pkt_len);
-#endif
+		//pr_debug("i=%u l=%u\n", dword_idx, pkt_len);
 		if (pkt_len == 0) {
 			/* if this lbuf is closed, move to next lbuf */
 			LBUF_GET_HEADER(buf_addr, lh);
@@ -738,6 +736,8 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	/* check to safely produce packet by examining cons */
 	cons = get_tx_cons(desc);
 	avail_size = (cons > prod_pvt ? 0 : desc->size) + cons - prod_pvt - 1;
+	//pr_debug("%s: prod_pvt=%u cons=%u avail=%u req_size=%u pkt_len=%u\n", __func__,
+	//	 prod_pvt, cons, avail_size, ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE, pkt_len);
 	if (ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE > avail_size) {
 		spin_unlock_bh(&desc->lock);
 		return -EBUSY;
@@ -805,6 +805,8 @@ again:
 
 	/* garbage collect lbuf-linked skbs */
 	while((skb = skb_dequeue(&desc->skbq))) {
+		netif_dbg(adapter, tx_done, default_netdev(adapter),
+			  "gcskb: %p\n", skb);
 		dev_kfree_skb_any(skb);
 		if (lbuf_cb(skb) == (u64)gc_addr)
 			break;
