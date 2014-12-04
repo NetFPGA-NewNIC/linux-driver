@@ -80,7 +80,7 @@ void show_stat(struct lbufnet_stat *s)
 			total_rx_packets / elapsed_sec, (total_rx_bytes * 8 / 1000000) / elapsed_sec);
 }
 
-void input_handler(void *data, unsigned int len)
+int input_handler(void *data, unsigned int len)
 {
 	if (total_rx_packets == 0)
 		gettimeofday(&start_tv, NULL);
@@ -88,6 +88,7 @@ void input_handler(void *data, unsigned int len)
 		gettimeofday(&end_tv, NULL);
 	total_rx_packets++;
 	total_rx_bytes += len;
+	return 1;
 }
 
 int main(int argc, char *argv[])

@@ -53,6 +53,9 @@
 #include "nf10_user.h"
 #include "lbufnet.h"
 
+#define likely(x)      __builtin_expect(!!(x), 1)
+#define unlikely(x)    __builtin_expect(!!(x), 0)
+
 #define DEV_FNAME	"/dev/" NF10_DRV_NAME
 #ifdef DEBUG
 #define dprintf(format, arg...)	\
@@ -191,9 +194,8 @@ static inline void move_to_next_lbuf(void *buf_addr)
 
 static inline void deliver_packet(void *pkt_addr, uint32_t pkt_len, uint64_t *rx_packets)
 {
-	input_cb(pkt_addr, pkt_len);
+	*rx_packets += input_cb(pkt_addr, pkt_len);
 	memset(pkt_addr - LBUF_TX_METADATA_SIZE, 0, ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE);
-	(*rx_packets)++;
 }
 
 static void clean_tx(void)
@@ -225,15 +227,15 @@ int lbufnet_input(unsigned long nr_packets, int sync_flags)
 	int n;
 	unsigned long rx_packets = 0;
 
-	if (!initialized) {
+	if (unlikely(!initialized)) {
 		eprintf("Error: lbuf is not initialized\n");
 		return -1;
 	}
-	if (!input_cb) {
+	if (unlikely(!input_cb)) {
 		eprintf("Error: input callback is not initialized\n");
 		return -1;
 	}
-	if (sync_flags != SF_BLOCK && sync_flags != SF_NON_BLOCK && sync_flags != SF_BUSY_BLOCK) {
+	if (unlikely(sync_flags != SF_BLOCK && sync_flags != SF_NON_BLOCK && sync_flags != SF_BUSY_BLOCK)) {
 		eprintf("Error: undefined sync flags\n");
 		return -1;
 	}
@@ -253,7 +255,7 @@ wait_rx:
 		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
 		pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
 
-		if (pkt_len == 0) {
+		if (unlikely(pkt_len == 0)) {
 			/* if this lbuf is closed, move to next lbuf */
 			LBUF_GET_HEADER(buf_addr, lh);
 			if (LBUF_CLOSED(dword_idx, lh)) {
@@ -264,7 +266,7 @@ wait_rx:
 				return 0;
 			goto wait_rx;
 		}
-		if (!LBUF_IS_PKT_VALID(port_num, pkt_len)) {
+		if (unlikely(!LBUF_IS_PKT_VALID(port_num, pkt_len))) {
 			fprintf(stderr, "Error: rx_idx=%d lbuf contains invalid pkt len=%u\n",
 				ld->rx_idx, pkt_len);
 			break;
@@ -284,7 +286,7 @@ wait_to_end_recv:
 				goto wait_to_end_recv;
 			}
 			deliver_packet(pkt_addr, pkt_len, &rx_packets);
-			if (LBUF_CLOSED(next_dword_idx, lh)) {
+			if (unlikely(LBUF_CLOSED(next_dword_idx, lh))) {
 				move_to_next_lbuf(buf_addr);
 				continue;
 			}
@@ -293,7 +295,7 @@ wait_to_end_recv:
 				next_dword_idx = LBUF_128B_ALIGN(next_dword_idx);
 			ld->rx_cons = next_dword_idx;
 		}
-		if (ld->rx_cons >= (LBUF_RX_SIZE >> 2))
+		if (unlikely(ld->rx_cons >= (LBUF_RX_SIZE >> 2)))
 			move_to_next_lbuf(buf_addr);
 	} while(nr_packets == 0 || rx_packets < nr_packets);
 
@@ -306,15 +308,15 @@ int lbufnet_flush(int sync_flags)
 	struct pollfd pfd = { .fd = fd, .events = POLLOUT };
 	int n;
 
-	if (!initialized) {
+	if (unlikely(!initialized)) {
 		eprintf("Error: lbuf is not initialized\n");
 		return -1;
 	}
-	if (tx_lbuf_size == 0) {
+	if (unlikely(tx_lbuf_size == 0)) {
 		eprintf("Error: tx lbuf is not initialized\n");
 		return -1;
 	}
-	if (tx_offset == 0)
+	if (unlikely(tx_offset == 0))
 		return -1;
 
 	while(LBUF_TX_COMPLETION(tx_completion, ld->tx_idx) != TX_AVAIL) {
@@ -344,11 +346,11 @@ int lbufnet_write(void *data, unsigned int len, int sync_flags)
 	struct pollfd pfd = { .fd = fd, .events = POLLOUT };
 	int n;
 
-	if (!initialized) {
+	if (unlikely(!initialized)) {
 		eprintf("Error: lbuf is not initialized\n");
 		return -1;
 	}
-	if (tx_lbuf_size == 0) {
+	if (unlikely(tx_lbuf_size == 0)) {
 		eprintf("Error: tx lbuf is not initialized\n");
 		return -1;
 	}
@@ -368,7 +370,7 @@ avail_check:
 		}
 		clean_tx();
 	}
-	if (!LBUF_HAS_TX_ROOM(tx_lbuf_size, tx_offset, len)) {
+	if (unlikely(!LBUF_HAS_TX_ROOM(tx_lbuf_size, tx_offset, len))) {
 		lbufnet_flush(sync_flags);
 		goto avail_check;
 	}

@@ -111,6 +111,7 @@ static uint16_t checksum(const void *data, uint16_t len, uint32_t sum)
 }
 
 uint32_t base_sum;
+uint16_t echo_id = 0x3412;	/* XXX */
 void init_packet(struct ping_info *pinfo)
 {
 	struct ether_header *eh;
@@ -142,7 +143,7 @@ void init_packet(struct ping_info *pinfo)
 	icmp = &pinfo->pkt_data.icmphdr;
 	icmp->type = ICMP_ECHO;
 	icmp->code = 0;
-	icmp->un.echo.id = htons(0x121d);	/* XXX */
+	icmp->un.echo.id = echo_id;
 	base_sum = checksum(icmp, ip_len - sizeof(struct iphdr), 0);
 
 	eh = &pinfo->pkt_data.ethhdr;
@@ -151,19 +152,20 @@ void init_packet(struct ping_info *pinfo)
 	eh->ether_type	= htons(ETHERTYPE_IP);
 }
 
-void input_handler(void *data, unsigned int len)
+int input_handler(void *data, unsigned int len)
 {
 	struct packet *pkt = data;
 	struct timeval tv;
 
 	if (pkt->iphdr.ip_p != IPPROTO_ICMP)
-		return;
+		return 0;
 
 	if (pinfo.mode == MODE_PING) {
 		double elapsed_ms;
 
-		if (pkt->icmphdr.type != ICMP_ECHOREPLY)
-			return;
+		if (pkt->icmphdr.type != ICMP_ECHOREPLY ||
+		    pkt->icmphdr.un.echo.id != echo_id)
+			return 0;
 		gettimeofday(&end_tv, NULL);
 		timersub(&end_tv, &start_tv, &tv);
 		elapsed_ms = tv.tv_sec * 1000 + ((double)tv.tv_usec / 1000);
@@ -180,11 +182,13 @@ void input_handler(void *data, unsigned int len)
 		uint16_t icmplen;
 
 		if (pkt->icmphdr.type != ICMP_ECHO)
-			return;
+			return 0;
 		icmplen = len - sizeof(struct ether_header) - sizeof(struct ip);
 		/* check if checksum is correct */
-		if (wrapsum(checksum(&pkt->icmphdr, icmplen, 0)) != 0)
-			return;
+		if (wrapsum(checksum(&pkt->icmphdr, icmplen, 0)) != 0) {
+			fprintf(stderr, "ping request received, but ICMP checksum is incorrect!\n");
+			return 1;
+		}
 
 		pkt->icmphdr.type = ICMP_ECHOREPLY;
 		pkt->icmphdr.checksum = 0;
@@ -205,6 +209,7 @@ void input_handler(void *data, unsigned int len)
 			inet_ntoa(pkt->iphdr.ip_src),
 			ntohs(pkt->icmphdr.un.echo.sequence));
 	}
+	return 1;
 }
 
 int main(int argc, char *argv[])

@@ -48,7 +48,7 @@ enum {
 	SF_BUSY_BLOCK,
 };
 
-typedef void (*lbufnet_input_cb)(void *data, unsigned int len);
+typedef int (*lbufnet_input_cb)(void *data, unsigned int len);
 typedef void (*lbufnet_exit_cb)(struct lbufnet_stat *stat);
 
 int lbufnet_init(unsigned int _tx_lbuf_size);
