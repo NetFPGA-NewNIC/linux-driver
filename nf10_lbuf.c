@@ -725,7 +725,6 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	spin_lock_bh(&desc->lock);
 	prod = get_tx_prod(desc);
 	prod_pvt = get_tx_prod_pvt(desc);
-	pr_debug("%s: prod=%u prod_pvt=%u\n", __func__, prod, prod_pvt);
 	/* check if need to wrap around by examining tail room */
 	if (!LBUF_HAS_TX_ROOM(desc->size, prod_pvt, pkt_len)) {
 		/* if unsent packets exist, return with busy, since
@@ -738,13 +737,10 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 		prod = prod_pvt = 0;
 		set_tx_prod(desc, prod);
 		set_tx_prod_pvt(desc, prod_pvt);
-		pr_debug("%s: wrap around to 0\n", __func__);
 	}
 	/* check to safely produce packet by examining cons */
 	cons = get_tx_cons(desc);
 	avail_size = (cons > prod_pvt ? 0 : desc->size) + cons - prod_pvt - 1;
-	pr_debug("%s: prod_pvt=%u cons=%u avail=%u req_size=%u pkt_len=%u\n", __func__,
-		 prod_pvt, cons, avail_size, ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE, pkt_len);
 	if (ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE > avail_size) {
 		spin_unlock_bh(&desc->lock);
 		return -EBUSY;
@@ -757,8 +753,6 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	spin_unlock_bh(&desc->lock);
 
 	netdev->stats.tx_packets++;
-	pr_debug("%s: updated prod_pvt=%u tx_packets=%lu\n", __func__,
-		 prod_pvt, netdev->stats.tx_packets);
 
 	return 0;
 }
@@ -804,9 +798,6 @@ again:
 		goto out;
 	}
 
-	pr_debug("%s: gc_addr=%p tx_wb=%p prod=%u cons=%u\n", __func__,
-		 (void *)gc_addr, (void *)get_last_gc_addr(), get_tx_prod(desc), get_tx_cons(desc));
-
 	cons = ALIGN(gc_addr - desc->dma_addr, 4096);
 	if (cons == desc->size)
 		cons = 0;
@@ -817,7 +808,6 @@ again:
 
 	/* garbage collect lbuf-linked skbs */
 	while((skb = skb_dequeue(&desc->skbq))) {
-		pr_debug("\t--gcskb=%p\n", (void *)lbuf_cb(skb));
 		dev_kfree_skb_any(skb);
 		if (lbuf_cb(skb) == (u64)gc_addr)
 			break;
@@ -827,6 +817,10 @@ again:
 	for (i = 0; i < CONFIG_NR_PORTS; i++)
 		if (netif_queue_stopped(adapter->netdev[i]))
 			netif_wake_queue(adapter->netdev[i]);
+
+	netif_dbg(adapter, tx_done, default_netdev(adapter),
+		  "gctx: gc_addr=%p last=%p cons=%u\n", (void *)gc_addr,
+		  (void *)get_last_gc_addr(), get_tx_cons(desc));
 
 	/* store last seen gc address to let hw know it */
 	set_last_gc_addr(gc_addr);
