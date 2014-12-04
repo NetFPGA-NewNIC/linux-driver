@@ -15,7 +15,6 @@
 #	 This is the makefile for building nf10.ko.
 #	 - CONFIG_PROFILE=y enables measurement codes for profiling. lbuf uses
 #	 it to measure the time taken for skb alloc/memcpy/protocol processing.
-#	 - CONFIG_LBUF_COHERENT=y uses DMA-coherent data buffer.
 #
 #	 This code is initially developed for the Network-as-a-Service (NaaS) project.
 #        
@@ -57,12 +56,10 @@ ifeq ($(NAAS),y)
 CONFIG_PHY_INIT := y
 CONFIG_NO_TIMESTAMP := y
 CONFIG_NR_PORTS := 1
-CONFIG_LBUF_COHERENT := y
 endif
 
 ifeq ($(OSNT),y)
 ccflags-y += -DCONFIG_OSNT
-CONFIG_USER_ONLY := y
 endif
 
 ifeq ($(CONFIG_PHY_INIT),y)
@@ -71,9 +68,7 @@ ccflags-y += -DCONFIG_PHY_INIT
 endif
 
 ccflags-$(CONFIG_PROFILE) += -DCONFIG_PROFILE
-ccflags-$(CONFIG_LBUF_COHERENT) += -DCONFIG_LBUF_COHERENT
 ccflags-$(CONFIG_NO_TIMESTAMP) += -DCONFIG_NO_TIMESTAMP
-ccflags-$(CONFIG_USER_ONLY) += -DCONFIG_USER_ONLY
 ifeq ($(CONFIG_NR_PORTS),)
 	CONFIG_NR_PORTS := 4
 endif
