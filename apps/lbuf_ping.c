@@ -185,7 +185,6 @@ void input_handler(void *data, unsigned int len)
 		/* check if checksum is correct */
 		if (wrapsum(checksum(&pkt->icmphdr, icmplen, 0)) != 0)
 			return;
-		gettimeofday(&tv, NULL);
 
 		pkt->icmphdr.type = ICMP_ECHOREPLY;
 		pkt->icmphdr.checksum = 0;
@@ -199,6 +198,7 @@ void input_handler(void *data, unsigned int len)
 		pkt->icmphdr.checksum = wrapsum(checksum(&pkt->icmphdr, icmplen, 0));
 
 		lbufnet_output(data, len, pinfo.sync_flag);
+		gettimeofday(&tv, NULL);
 		printf("[%lu.%06lu sec] pong for ping request %lu bytes from %s: icmp_req=%u\n",
 			tv.tv_sec, tv.tv_usec,
 			len - sizeof(struct ether_header) - sizeof(struct iphdr),
