@@ -550,7 +550,6 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 	void *pkt_addr;
 	unsigned int pkt_len, next_pkt_len;
 	struct net_device *netdev;
-	unsigned long poll_cnt;
 	union lbuf_header lh;
 
 	if (nf10_user_callback(adapter, 1)) {
@@ -559,15 +558,13 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 	}
 
 	do {
-		poll_cnt = 0;
 		skb = NULL;
 		buf_addr = cur_rx_desc()->kern_addr;
 		dword_idx = get_rx_cons();
 		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
 		pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
 #if 0
-		if (poll_cnt == 0)
-			pr_debug("pc=%lu: i=%u l=%u\n", poll_cnt, dword_idx, pkt_len);
+			pr_debug("i=%u l=%u\n", dword_idx, pkt_len);
 #endif
 		if (pkt_len == 0) {
 			/* if this lbuf is closed, move to next lbuf */
@@ -611,7 +608,7 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 		next_dword_idx = LBUF_NEXT_DWORD_IDX(dword_idx, pkt_len);
 wait_to_end_recv:
 		next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
-		//pr_debug("ptc: nl=%u ni=%u pc=%lu\n", next_pkt_len, next_dword_idx, poll_cnt);
+		//pr_debug("ptc: nl=%u ni=%u\n", next_pkt_len, next_dword_idx);
 		if (next_pkt_len > 0) {
 			/* if entire packet has been received, consume it */
 			deliver_packet(netdev, pkt_addr, pkt_len,
