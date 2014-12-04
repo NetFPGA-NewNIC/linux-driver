@@ -154,19 +154,19 @@ void init_packet(struct ping_info *pinfo)
 void input_handler(void *data, unsigned int len)
 {
 	struct packet *pkt = data;
+	struct timeval tv;
 
 	if (pkt->iphdr.ip_p != IPPROTO_ICMP)
 		return;
 
 	if (pinfo.mode == MODE_PING) {
 		double elapsed_ms;
-		struct timeval elapsed_tv;
 
 		if (pkt->icmphdr.type != ICMP_ECHOREPLY)
 			return;
 		gettimeofday(&end_tv, NULL);
-		timersub(&end_tv, &start_tv, &elapsed_tv);
-		elapsed_ms = elapsed_tv.tv_sec * 1000 + ((double)elapsed_tv.tv_usec / 1000);
+		timersub(&end_tv, &start_tv, &tv);
+		elapsed_ms = tv.tv_sec * 1000 + ((double)tv.tv_usec / 1000);
 		printf("%lu bytes from %s: icmp_req=%u ttl=%u time=%.3lf ms\n",
 			len - sizeof(struct ether_header) - sizeof(struct iphdr),
 			inet_ntoa(pkt->iphdr.ip_src),
@@ -185,6 +185,7 @@ void input_handler(void *data, unsigned int len)
 		/* check if checksum is correct */
 		if (wrapsum(checksum(&pkt->icmphdr, icmplen, 0)) != 0)
 			return;
+		gettimeofday(&tv, NULL);
 
 		pkt->icmphdr.type = ICMP_ECHOREPLY;
 		pkt->icmphdr.checksum = 0;
@@ -198,7 +199,8 @@ void input_handler(void *data, unsigned int len)
 		pkt->icmphdr.checksum = wrapsum(checksum(&pkt->icmphdr, icmplen, 0));
 
 		lbufnet_output(data, len, pinfo.sync_flag);
-		printf("pong for ping request %lu bytes from %s: icmp_req=%u\n",
+		printf("[%lu.%06lu sec] pong for ping request %lu bytes from %s: icmp_req=%u\n",
+			tv.tv_sec, tv.tv_usec,
 			len - sizeof(struct ether_header) - sizeof(struct iphdr),
 			inet_ntoa(pkt->iphdr.ip_src),
 			ntohs(pkt->icmphdr.un.echo.sequence));
