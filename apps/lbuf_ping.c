@@ -169,7 +169,7 @@ int input_handler(void *data, unsigned int len)
 		gettimeofday(&end_tv, NULL);
 		timersub(&end_tv, &start_tv, &tv);
 		elapsed_ms = tv.tv_sec * 1000 + ((double)tv.tv_usec / 1000);
-		printf("%lu bytes from %s: icmp_req=%u ttl=%u time=%.3lf ms\n",
+		printf("%lu bytes from %s: icmp_req=%u ttl=%u time=%.4lf ms\n",
 			len - sizeof(struct ether_header) - sizeof(struct iphdr),
 			inet_ntoa(pkt->iphdr.ip_src),
 			ntohs(pkt->icmphdr.un.echo.sequence),

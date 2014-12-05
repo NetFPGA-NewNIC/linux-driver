@@ -58,6 +58,7 @@
 
 #ifndef PAGE_SHIFT
 #define PAGE_SHIFT	12
+#define PAGE_SIZE	(1 << PAGE_SHIFT)
 #endif
 #define ORDER_TO_SIZE(order)	(1UL << (PAGE_SHIFT + order))
 #define LBUF_RX_ORDER	9	/* default 2MB */
