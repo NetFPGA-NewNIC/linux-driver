@@ -113,7 +113,10 @@ int main(int argc, char *argv[])
 			break;
 		}
 	}
-	lbufnet_init(&conf);
+	if (lbufnet_init(&conf)) {
+		fprintf(stderr, "Error: failed to initialize lbufnet\n");
+		return -1;
+	}
 	lbufnet_register_input_callback(input_handler);
 	lbufnet_register_exit_callback(show_stat);
 	lbufnet_input(LBUFNET_INPUT_FOREVER, sync_flag);

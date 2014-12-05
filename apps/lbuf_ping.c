@@ -263,7 +263,10 @@ int main(int argc, char *argv[])
 			break;
 		}
 	}
-	lbufnet_init(&conf);
+	if (lbufnet_init(&conf)) {
+		fprintf(stderr, "Error: failed to initialize lbufnet\n");
+		return -1;
+	}
 	lbufnet_register_input_callback(input_handler);
 	if (pinfo.mode == MODE_PING) {
 		uint16_t sequence;

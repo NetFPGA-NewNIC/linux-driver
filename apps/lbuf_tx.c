@@ -203,7 +203,10 @@ int main(int argc, char *argv[])
 		pinfo.batchlen = pinfo.buflen;
 
 	conf.tx_lbuf_size = pinfo.buflen;
-	lbufnet_init(&conf);
+	if (lbufnet_init(&conf)) {
+		fprintf(stderr, "Error: failed to initialize lbufnet\n");
+		return -1;
+	}
 	init_packet(&pinfo);
 
 	for (i = 0; i < pinfo.count; i++) {
