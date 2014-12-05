@@ -48,6 +48,8 @@
 #include <string.h>
 #include <sys/time.h>
 #include <poll.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 #include "nf10_lbuf_api.h"
 #include "nf10_user.h"
@@ -82,11 +84,12 @@ static uint32_t tx_offset;
 static uint8_t tx_avail[NR_TX_USER_LBUF];
 static lbufnet_input_cb input_cb;
 static lbufnet_exit_cb exit_cb;
-struct lbufnet_stat stat;
+struct lbufnet_stat lbufnet_stat;
+static void (*xmit_packet)(void);
+
 /* direct pci access */
 static int pcifd;
 static void *pci_base_addr;
-static void (*xmit_packet)(void);
 
 static inline uint64_t rdtsc(void)
 {       
@@ -112,12 +115,32 @@ static inline void xmit_packet_pci(void)
 	*((uint32_t *)(pci_base_addr + 0xA0 + (idx << 2))) = tx_offset >> 3;
 }
 
+static char *get_pci_filename(void)
+{
+	DIR *dp;
+	struct dirent *ep;
+	struct stat st;
+	char path[128];
+	char *base_dir = "/sys/bus/pci/drivers/" NF10_DRV_NAME;
+	dp = opendir(base_dir);
+	if (!dp) {
+		perror("opendir");
+		return NULL;
+	}
+	while (ep = readdir(dp)) {
+		snprintf(path, 128, "%s/%s/resource2", base_dir, ep->d_name);
+		if (stat(path, &st) == 0)
+			return strdup(path);
+	}
+	return NULL;
+}
+
 int lbufnet_exit(void);
 static void lbufnet_finish(int sig)
 {
 	if (exit_cb) {
-		stat.nr_drops = lh.nr_drops - prev_nr_drops;
-		exit_cb(&stat);
+		lbufnet_stat.nr_drops = lh.nr_drops - prev_nr_drops;
+		exit_cb(&lbufnet_stat);
 	}
 	lbufnet_exit();
 	exit(0);
@@ -187,10 +210,17 @@ int lbufnet_init(struct lbufnet_conf *conf)
 	tx_lbuf_size = conf->tx_lbuf_size;
 
 	if (conf->pci_direct_access) {
-		if ((pcifd = open("/sys/bus/pci/drivers/nf10/0000:01:00.0/resource2", O_RDWR, 0755)) < 0) {
+		char *fn = get_pci_filename();
+		if (!fn) {
+			eprintf("failed to get pci file name from sysfs\n");
+			return -1;
+		}
+		if ((pcifd = open(fn, O_RDWR, 0755)) < 0) {
+			free(fn);
 			perror("open");
 			return -1;
 		}
+		free(fn);
 		pci_base_addr = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, pcifd, 0);
 		if (pci_base_addr == MAP_FAILED) {
 			perror("mmap");
@@ -205,6 +235,8 @@ int lbufnet_init(struct lbufnet_conf *conf)
 	initialized = 1;
 
 	signal(SIGINT, lbufnet_finish);	/* XXX: needed? or adding more signals */
+
+	return 0;
 }
 
 int lbufnet_exit(void)
@@ -327,7 +359,7 @@ wait_to_end_recv:
 		else {
 			LBUF_GET_HEADER(buf_addr, lh);
 			if ((lh.nr_qwords << 1) < next_dword_idx - NR_RESERVED_DWORDS) {
-				stat.nr_polls++;
+				lbufnet_stat.nr_polls++;
 				goto wait_to_end_recv;
 			}
 			deliver_packet(pkt_addr, pkt_len, &rx_packets);
