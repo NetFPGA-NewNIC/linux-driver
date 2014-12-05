@@ -76,8 +76,11 @@ void show_stat(struct lbufnet_stat *s)
 		s->nr_drops, s->nr_polls);
 	printf("Elapsed time = %.6lf sec\n", elapsed_sec);
 	if (elapsed_sec > 0)
-		printf("Throughput = %.2lf pps (%.2lf Mb/sec)\n",
-			total_rx_packets / elapsed_sec, (total_rx_bytes * 8 / 1000000) / elapsed_sec);
+		printf("Throughput = %.2lf pps (%.6lf Gbps raw=%.6lf Gbps)\n",
+			total_rx_packets / elapsed_sec,
+			(total_rx_bytes * 8 * 1e-9) / elapsed_sec,
+			/* add 24B = 20B framing(12B IFG + 8B Preemble) + 4B CRC */
+			((total_rx_bytes + (24 * total_rx_packets)) * 8) * 1e-9 / elapsed_sec);
 }
 
 int input_handler(void *data, unsigned int len)
