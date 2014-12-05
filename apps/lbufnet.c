@@ -104,10 +104,12 @@ static inline void xmit_packet_ioctl(void)
 
 static inline void xmit_packet_pci(void)
 {
-	*((uint64_t *)(pci_base_addr + 0x80 + (ld->tx_idx << 3))) = ld->tx_dma_addr[ref_prod];
-	*((uint32_t *)(pci_base_addr + 0xA0 + (ld->tx_idx << 2))) = tx_offset >> 3;
-	LBUF_TX_COMPLETION(tx_completion, ld->tx_idx) = TX_USED;
+	uint32_t idx = ld->tx_idx;
+	LBUF_TX_COMPLETION(tx_completion, idx) = TX_USED;
 	inc_idx(ld->tx_idx);
+	/* XXX: need __sync_synchronize() here? */
+	*((uint64_t *)(pci_base_addr + 0x80 + (idx << 3))) = ld->tx_dma_addr[ref_prod];
+	*((uint32_t *)(pci_base_addr + 0xA0 + (idx << 2))) = tx_offset >> 3;
 }
 
 int lbufnet_exit(void);
