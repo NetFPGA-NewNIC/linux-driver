@@ -213,6 +213,7 @@ int main(int argc, char *argv[])
 	}
 	lbufnet_flush(pinfo.sync_flag);
 	printf("%d packets sent\n", i);
+	lbufnet_exit();
 
 	return 0;
 }
