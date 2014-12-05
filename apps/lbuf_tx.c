@@ -148,6 +148,7 @@ int main(int argc, char *argv[])
 	int i;
 	unsigned int batched_size;
 	int opt;
+	struct lbufnet_conf conf = { .pci_direct_access = 0 };
 	struct packet_info pinfo = {
 		.src_ip = "11.0.0.1",
 		.dst_ip = "12.0.0.1",
@@ -160,7 +161,7 @@ int main(int argc, char *argv[])
 		.sync_flag = SF_BLOCK,
 	};
 
-	while ((opt = getopt(argc, argv, "s:d:S:D:n:l:b:B:f:")) != -1) {
+	while ((opt = getopt(argc, argv, "s:d:S:D:n:l:b:B:f:p")) != -1) {
 		switch(opt) {
 		case 's':
 			pinfo.src_ip = optarg;
@@ -193,12 +194,16 @@ int main(int argc, char *argv[])
 		case 'f':
 			pinfo.sync_flag = atoi(optarg);
 			break;
+		case 'p':
+			conf.pci_direct_access = 1;
+			break;
 		}
 	}
 	if (pinfo.batchlen > pinfo.buflen)
 		pinfo.batchlen = pinfo.buflen;
 
-	lbufnet_init(pinfo.buflen);
+	conf.tx_lbuf_size = pinfo.buflen;
+	lbufnet_init(&conf);
 	init_packet(&pinfo);
 
 	for (i = 0; i < pinfo.count; i++) {

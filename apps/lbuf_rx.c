@@ -95,18 +95,25 @@ int main(int argc, char *argv[])
 {
 	int sync_flag = SF_BLOCK;
 	int opt;
+	struct lbufnet_conf conf = {
+		.tx_lbuf_size = 0,	/* don't use tx by this app */
+		.pci_direct_access = 0,	/* use ioctl by default */
+	};
 
-	while ((opt = getopt(argc, argv, "f:")) != -1) {
+	while ((opt = getopt(argc, argv, "f:p")) != -1) {
 		switch(opt) {
 		case 'f':
 			sync_flag = atoi(optarg);
 			break;
+		case 'p':
+			conf.pci_direct_access = 1;
+			break;
 		}
 	}
-	lbufnet_init(0);
+	lbufnet_init(&conf);
 	lbufnet_register_input_callback(input_handler);
 	lbufnet_register_exit_callback(show_stat);
-	lbufnet_input(0, sync_flag);
+	lbufnet_input(LBUFNET_INPUT_FOREVER, sync_flag);
 
 	return 0;
 }

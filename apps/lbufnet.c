@@ -83,8 +83,10 @@ static uint8_t tx_avail[NR_TX_USER_LBUF];
 static lbufnet_input_cb input_cb;
 static lbufnet_exit_cb exit_cb;
 struct lbufnet_stat stat;
+/* direct pci access */
 static int pcifd;
 static void *pci_base_addr;
+static void (*xmit_packet)(void);
 
 static inline uint64_t rdtsc(void)
 {       
@@ -93,6 +95,19 @@ static inline uint64_t rdtsc(void)
 	asm volatile("rdtsc" : "=a" (low), "=d" (high));
 
 	return low | ((uint64_t)high) << 32;
+}
+
+static inline void xmit_packet_ioctl(void)
+{
+	ioctl(fd, NF10_IOCTL_CMD_XMIT, NF10_IOCTL_ARG_XMIT(ref_prod, tx_offset));
+}
+
+static inline void xmit_packet_pci(void)
+{
+	*((uint64_t *)(pci_base_addr + 0x80 + (ld->tx_idx << 3))) = ld->tx_dma_addr[ref_prod];
+	*((uint32_t *)(pci_base_addr + 0xA0 + (ld->tx_idx << 2))) = tx_offset >> 3;
+	LBUF_TX_COMPLETION(tx_completion, ld->tx_idx) = TX_USED;
+	inc_idx(ld->tx_idx);
 }
 
 int lbufnet_exit(void);
@@ -106,7 +121,7 @@ static void lbufnet_finish(int sig)
 	exit(0);
 }
 
-int lbufnet_init(unsigned int _tx_lbuf_size)
+int lbufnet_init(struct lbufnet_conf *conf)
 {
 	int i;
 
@@ -155,30 +170,35 @@ int lbufnet_init(unsigned int _tx_lbuf_size)
 	LBUF_GET_HEADER(rx_lbuf[ld->rx_idx], lh);
 	prev_nr_drops = lh.nr_drops;
 
-	if (_tx_lbuf_size) {
+	if (conf->tx_lbuf_size) {
 		for (i = 0; i < NR_TX_USER_LBUF; i++) {
-			tx_lbuf[i] = mmap(NULL, _tx_lbuf_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+			tx_lbuf[i] = mmap(NULL, conf->tx_lbuf_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 			if (tx_lbuf[i] == MAP_FAILED) {
 				perror("mmap");
 				return -1;
 			}
 			tx_avail[i] = 1;
 			dprintf("TX lbuf[%d] is mmaped to vaddr=%p w/ size=%u (dma_addr=%p)\n",
-					i, tx_lbuf[i], _tx_lbuf_size, (void *)ld->tx_dma_addr[i]);
+					i, tx_lbuf[i], conf->tx_lbuf_size, (void *)ld->tx_dma_addr[i]);
 		}
 	}
-	tx_lbuf_size = _tx_lbuf_size;
+	tx_lbuf_size = conf->tx_lbuf_size;
 
-	if ((pcifd = open("/sys/bus/pci/drivers/nf10/0000:01:00.0/resource2", O_RDWR, 0755)) < 0) {
-		perror("open");
-		return -1;
+	if (conf->pci_direct_access) {
+		if ((pcifd = open("/sys/bus/pci/drivers/nf10/0000:01:00.0/resource2", O_RDWR, 0755)) < 0) {
+			perror("open");
+			return -1;
+		}
+		pci_base_addr = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, pcifd, 0);
+		if (pci_base_addr == MAP_FAILED) {
+			perror("mmap");
+			return -1;
+		}
+		xmit_packet = xmit_packet_pci;
+		dprintf("pci bar2 is mapped to vaddr=%p w/ size=%u\n", pci_base_addr, PAGE_SIZE);
 	}
-	pci_base_addr = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, pcifd, 0);
-	if (pci_base_addr == MAP_FAILED) {
-		perror("mmap");
-		return -1;
-	}
-	dprintf("pci bar2 is mapped to vaddr=%p w/ size=%u\n", pci_base_addr, PAGE_SIZE);
+	else
+		xmit_packet = xmit_packet_ioctl;
 
 	initialized = 1;
 
@@ -320,7 +340,7 @@ wait_to_end_recv:
 		}
 		if (unlikely(ld->rx_cons >= (LBUF_RX_SIZE >> 2)))
 			move_to_next_lbuf(buf_addr);
-	} while(nr_packets == 0 || rx_packets < nr_packets);
+	} while(nr_packets == LBUFNET_INPUT_FOREVER || rx_packets < nr_packets);
 
 	return rx_packets;
 }
@@ -357,14 +377,8 @@ int lbufnet_flush(int sync_flags)
 		clean_tx();
 	}
 	tx_avail[ref_prod] = 0;
-#if 0
-	ioctl(fd, NF10_IOCTL_CMD_XMIT, NF10_IOCTL_ARG_XMIT(ref_prod, tx_offset));
-#else
-	*((uint64_t *)(pci_base_addr + 0x80 + (ld->tx_idx << 3))) = ld->tx_dma_addr[ref_prod];
-	*((uint32_t *)(pci_base_addr + 0xA0 + (ld->tx_idx << 2))) = tx_offset >> 3;
-	LBUF_TX_COMPLETION(tx_completion, ld->tx_idx) = TX_USED;
-	inc_idx(ld->tx_idx);
-#endif
+
+	xmit_packet();
 
 	inc_txbuf_ref(ref_prod);
 	out_bytes = tx_offset;

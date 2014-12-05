@@ -37,11 +37,17 @@
 *
 */
 
+struct lbufnet_conf {
+	unsigned int tx_lbuf_size;
+	int pci_direct_access;
+};
+
 struct lbufnet_stat {
 	unsigned int nr_drops;
 	unsigned long nr_polls;
 };
 
+#define LBUFNET_INPUT_FOREVER	0
 enum {
 	SF_NON_BLOCK = 0,
 	SF_BLOCK,
@@ -51,7 +57,7 @@ enum {
 typedef int (*lbufnet_input_cb)(void *data, unsigned int len);
 typedef void (*lbufnet_exit_cb)(struct lbufnet_stat *stat);
 
-int lbufnet_init(unsigned int _tx_lbuf_size);
+int lbufnet_init(struct lbufnet_conf *conf);
 int lbufnet_exit(void);
 int lbufnet_register_input_callback(lbufnet_input_cb cb);
 int lbufnet_register_exit_callback(lbufnet_exit_cb cb);

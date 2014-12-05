@@ -223,9 +223,13 @@ int main(int argc, char *argv[])
 	uint64_t ret;
 	int i;
 	unsigned int batched_size;
+	struct lbufnet_conf conf = {
+		.tx_lbuf_size = 4096,	/* 4K tx buffer */
+		.pci_direct_access = 0,	/* use ioctl by default */
+	};
 	int opt;
 
-	while ((opt = getopt(argc, argv, "s:d:S:D:n:f:m:i:l:")) != -1) {
+	while ((opt = getopt(argc, argv, "s:d:S:D:n:f:m:i:l:p")) != -1) {
 		switch(opt) {
 		case 's':
 			pinfo.src_ip = optarg;
@@ -254,9 +258,12 @@ int main(int argc, char *argv[])
 		case 'f':
 			pinfo.sync_flag = atoi(optarg);
 			break;
+		case 'p':
+			conf.pci_direct_access = 1;
+			break;
 		}
 	}
-	lbufnet_init(4096);	/* 4KB tx buffer */
+	lbufnet_init(&conf);
 	lbufnet_register_input_callback(input_handler);
 	if (pinfo.mode == MODE_PING) {
 		uint16_t sequence;
@@ -283,7 +290,7 @@ int main(int argc, char *argv[])
 	}
 	else if (pinfo.mode == MODE_PONG) {
 		printf("PONG waits PING...\n");
-		lbufnet_input(0, pinfo.sync_flag);
+		lbufnet_input(LBUFNET_INPUT_FOREVER, pinfo.sync_flag);
 	}
 
 	return 0;
