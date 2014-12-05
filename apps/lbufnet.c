@@ -86,6 +86,7 @@ static lbufnet_input_cb input_cb;
 static lbufnet_exit_cb exit_cb;
 struct lbufnet_stat lbufnet_stat;
 static void (*xmit_packet)(void);
+static void (*prepare_rx_lbuf)(void);
 
 /* direct pci access */
 static int pcifd;
@@ -113,6 +114,19 @@ static inline void xmit_packet_pci(void)
 	/* XXX: need __sync_synchronize() here? */
 	*((uint64_t *)(pci_base_addr + 0x80 + (idx << 3))) = ld->tx_dma_addr[ref_prod];
 	*((uint32_t *)(pci_base_addr + 0xA0 + (idx << 2))) = tx_offset >> 3;
+}
+
+static inline void prepare_rx_lbuf_ioctl(void)
+{
+	ioctl(fd, NF10_IOCTL_CMD_PREPARE_RX, ld->rx_idx);
+}
+
+static inline void prepare_rx_lbuf_pci(void)
+{
+	uint32_t idx = ld->rx_idx;
+	/* XXX: need __sync_synchronize() here? */
+	*((uint64_t *)(pci_base_addr + 0x40 + (idx << 3))) = ld->rx_dma_addr[idx];
+	*((uint32_t *)(pci_base_addr + 0x60 + (idx << 2))) = 0xcacabeef;
 }
 
 static char *get_pci_filename(void)
@@ -171,6 +185,9 @@ int lbufnet_init(struct lbufnet_conf *conf)
 	dprintf("\ttx_dma_addr\n");
 	for (i = 0; i < NR_TX_USER_LBUF; i++)
 		dprintf("\t\t[%d]=%p\n", i, (void *)ld->tx_dma_addr[i]);
+	dprintf("\trx_dma_addr\n");
+	for (i = 0; i < NR_SLOT; i++)
+		dprintf("\t\t[%d]=%p\n", i, (void *)ld->rx_dma_addr[i]);
 	dprintf("\tlast_gc_addr=0x%llx\n", ld->last_gc_addr);
 
 	tx_completion = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -227,10 +244,13 @@ int lbufnet_init(struct lbufnet_conf *conf)
 			return -1;
 		}
 		xmit_packet = xmit_packet_pci;
+		prepare_rx_lbuf = prepare_rx_lbuf_pci;
 		dprintf("pci bar2 is mapped to vaddr=%p w/ size=%u\n", pci_base_addr, PAGE_SIZE);
 	}
-	else
+	else {
 		xmit_packet = xmit_packet_ioctl;
+		prepare_rx_lbuf = prepare_rx_lbuf_ioctl;
+	}
 
 	initialized = 1;
 
@@ -264,7 +284,7 @@ int lbufnet_register_exit_callback(lbufnet_exit_cb cb)
 static inline void move_to_next_lbuf(void *buf_addr)
 {
 	LBUF_INIT_HEADER(buf_addr);
-	ioctl(fd, NF10_IOCTL_CMD_PREPARE_RX, ld->rx_idx);
+	prepare_rx_lbuf();
 	inc_idx(ld->rx_idx);
 	ld->rx_cons = NR_RESERVED_DWORDS;
 }

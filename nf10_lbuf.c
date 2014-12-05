@@ -102,6 +102,7 @@ static struct lbuf_info {
 #define tx_clean_completed(d)	(get_tx_prod(d) == get_tx_cons(d))
 #define tx_pending(d)		(get_tx_prod_pvt(d) - get_tx_prod(d) > 0)
 #define set_tx_dma_addr(i, v)	do { lbuf_info.u->tx_dma_addr[i] = v; } while(0)
+#define set_rx_dma_addr(i, v)	do { lbuf_info.u->rx_dma_addr[i] = v; } while(0)
 
 #define get_last_gc_addr()	(lbuf_info.u->last_gc_addr)
 #define set_last_gc_addr(v)	do { lbuf_info.u->last_gc_addr = (unsigned long)v; } while(0)
@@ -361,6 +362,7 @@ static int init_rx_lbufs(struct nf10_adapter *adapter)
 		if (unlikely(!desc))
 			goto alloc_fail;
 		set_rx_desc(i, desc);
+		set_rx_dma_addr(i, desc->dma_addr);
 
 		netif_info(adapter, probe, default_netdev(adapter),
 			   "RX lbuf[%d] allocated at kern_addr=%p/dma_addr=%p"

@@ -89,6 +89,7 @@ struct lbuf_user {
 	unsigned int rx_cons;
 
 	unsigned long long tx_dma_addr[NR_TX_USER_LBUF];
+	unsigned long long rx_dma_addr[NR_SLOT];
 	unsigned long long last_gc_addr;
 };
 
