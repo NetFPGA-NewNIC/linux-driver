@@ -791,7 +791,8 @@ again:
 	if (!addr_in_lbuf(tx_kern_desc(), gc_addr)) {
 		/* user is not on, so gc_addr is seen by software */ 
 		set_last_gc_addr(gc_addr);
-		pr_warn("Warn: non-kernel gc address comes to irq handler\n");
+		pr_warn("Warn: non-kernel gc_addr (%p) seen in irq\n",
+			(void *)gc_addr);
 		goto out;
 	}
 

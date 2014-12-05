@@ -253,7 +253,7 @@ static void clean_tx(void)
 		last = gc_addr > ld->tx_dma_addr[ref_cons] &&
 		       gc_addr <= ld->tx_dma_addr[ref_cons] + tx_lbuf_size;
 		tx_avail[ref_cons] = 1;
-		dprintf("%s: clean ref_cons=%d ref_prod=%d by gc_addr %p (last=%d)\n",
+		dprintf("%s: ref_cons=%d ref_prod=%d by gc_addr %p (last=%d)\n",
 		      __func__, ref_cons, ref_prod, (void *)gc_addr, last);
 		inc_txbuf_ref(ref_cons);
 	} while(!last && ref_cons != ref_prod);
@@ -382,6 +382,7 @@ int lbufnet_flush(int sync_flags)
 
 	xmit_packet();
 
+	dprintf("%s: ref_prod=%d ref_cons=%d tx_offset=%u\n", __func__, ref_prod, ref_cons, tx_offset);
 	inc_txbuf_ref(ref_prod);
 	out_bytes = tx_offset;
 	tx_offset = 0;
