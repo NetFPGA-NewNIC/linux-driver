@@ -453,7 +453,7 @@ err_pci_iomap_bar0:
 	nf10_free_netdev(adapter);
 err_create_netdev:
 	pci_set_drvdata(pdev, NULL);
-  kfree(adapter);
+	kfree(adapter);
 err_alloc_adapter:
 	pci_clear_master(pdev);
 	pci_release_regions(pdev);
