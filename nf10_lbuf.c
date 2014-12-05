@@ -617,6 +617,8 @@ wait_to_end_recv:
 		}
 		else {	/* next_pkt_len == 0 */
 			LBUF_GET_HEADER(buf_addr, lh);
+			/* lazy update: rx_dropped is eventually accurate */
+			netdev->stats.rx_dropped = lh.nr_drops;
 			/* still waiting for the packet to be received,
 			 * continue polling on next_pkt_len */
 			if ((lh.nr_qwords << 1) < next_dword_idx - NR_RESERVED_DWORDS)
