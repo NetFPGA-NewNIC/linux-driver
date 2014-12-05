@@ -704,8 +704,19 @@ static unsigned long __copy_skb_to_lbuf(struct desc *desc, void *buf_addr,
 	buf_addr = LBUF_CUR_TX_ADDR(buf_addr, port_num, skb->len);
 	skb_copy_from_linear_data(skb, buf_addr, skb->len);
 	buf_addr = LBUF_NEXT_TX_ADDR(buf_addr, skb->len);
-	lbuf_cb(skb) = (u64)buf_addr;	/* for gc on irq */
-	skb_queue_tail(&desc->skbq, skb);
+
+	/* XXX: if skb is not shared, managed in skb queue in lbuf for later gc,
+	 * alternative is to immediately free it, but its destructor may believe
+	 * it has been drained, although it's just copied. I don't know yet
+	 * what timing-related stuff is impacted by such fake early free.
+	 * If not, remove skbq and later gc logic for performance. */
+	if (!skb_shared(skb)) {
+		lbuf_cb(skb) = (u64)buf_addr;	/* for gc on irq */
+		skb_queue_tail(&desc->skbq, skb);
+	}
+	else	/* for shared skb, promptly release it (e.g., pktgen),
+		   since manipulating shared skb's prev/next crashes system */
+		dev_kfree_skb_any(skb);
 
 	return buf_addr - desc->kern_addr;	/* updated prod_pvt */
 }

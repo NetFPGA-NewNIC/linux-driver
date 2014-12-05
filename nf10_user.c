@@ -396,8 +396,8 @@ bool nf10_user_callback(struct nf10_adapter *adapter, int rx)
 	/* if direct user access mode is enabled, just wake up
 	 * a waiting user thread */
 	if (adapter->user_flags & UF_USER_ON) { 
+		adapter->user_flags |= flag;
 		if (waitqueue_active(q)) {
-			adapter->user_flags |= flag;
 			netif_dbg(adapter, drv, default_netdev(adapter),
 				  "wake up a task for %s\n", rx ? "rx" : "tx");
 			wake_up(q);

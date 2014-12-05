@@ -345,7 +345,7 @@ wait_rx:
 				clean_tx();
 		} while (n <= 0 || pfd.revents & POLLERR || !(pfd.revents & POLLIN));
 	}
-	dprintf("Start receiving packets...\n");
+	dprintf("Start receiving packets (rx_packets=%lu)\n", rx_packets);
 	do {
 		dword_idx = ld->rx_cons;
 		buf_addr = rx_lbuf[ld->rx_idx];
