@@ -40,6 +40,7 @@ lbuf_ping.o: $(DRIVER_HEADERS)
 lbuf_tx: lbuf_tx.o lbufnet.o
 lbuf_rx: lbuf_rx.o lbufnet.o
 lbuf_ping: lbuf_ping.o lbufnet.o
+	$(CC) $(CFLAGS) -o $@ lbuf_ping.o lbufnet.o -lrt
 
 clean:
 	rm -f $(PROGRAMS) $(DRIVER_HEADERS) *.o

@@ -41,6 +41,7 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <stdint.h>
+#include <time.h>
 #include <sys/time.h>
 #include <string.h>
 #include <net/ethernet.h>
@@ -83,7 +84,7 @@ struct ping_info {
 	.sync_flag = SF_BLOCK,
 };
 
-struct timeval start_tv, end_tv;
+struct timespec start_ts, end_ts;
 
 /* wrapsum & checksum are taken from pkt-gen.c in netmap */
 static uint16_t wrapsum(uint32_t sum)
@@ -155,7 +156,7 @@ void init_packet(struct ping_info *pinfo)
 int input_handler(void *data, unsigned int len)
 {
 	struct packet *pkt = data;
-	struct timeval tv;
+	struct timespec ts;
 
 	if (pkt->iphdr.ip_p != IPPROTO_ICMP)
 		return 0;
@@ -166,10 +167,15 @@ int input_handler(void *data, unsigned int len)
 		if (pkt->icmphdr.type != ICMP_ECHOREPLY ||
 		    pkt->icmphdr.un.echo.id != echo_id)
 			return 0;
-		gettimeofday(&end_tv, NULL);
-		timersub(&end_tv, &start_tv, &tv);
-		elapsed_ms = tv.tv_sec * 1000 + ((double)tv.tv_usec / 1000);
-		printf("%lu bytes from %s: icmp_req=%u ttl=%u time=%.4lf ms\n",
+		clock_gettime(CLOCK_MONOTONIC, &end_ts);
+		ts.tv_sec = end_ts.tv_sec - start_ts.tv_sec;
+		ts.tv_nsec = end_ts.tv_nsec - start_ts.tv_nsec;
+		if (ts.tv_nsec < 0 ) {
+			--ts.tv_sec;
+			ts.tv_nsec += 1000000000;
+		}
+		elapsed_ms = ts.tv_sec * 1000 + ((double)ts.tv_nsec / 1000000);
+		printf("%lu bytes from %s: icmp_req=%u ttl=%u time=%.6lf ms\n",
 			len - sizeof(struct ether_header) - sizeof(struct iphdr),
 			inet_ntoa(pkt->iphdr.ip_src),
 			ntohs(pkt->icmphdr.un.echo.sequence),
@@ -202,9 +208,9 @@ int input_handler(void *data, unsigned int len)
 		pkt->icmphdr.checksum = wrapsum(checksum(&pkt->icmphdr, icmplen, 0));
 
 		lbufnet_output(data, len, pinfo.sync_flag);
-		gettimeofday(&tv, NULL);
-		printf("[%lu.%06lu sec] pong for ping request %lu bytes from %s: icmp_req=%u\n",
-			tv.tv_sec, tv.tv_usec,
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		printf("[%lu.%09lu sec] pong for ping request %lu bytes from %s: icmp_req=%u\n",
+			ts.tv_sec, ts.tv_nsec,
 			len - sizeof(struct ether_header) - sizeof(struct iphdr),
 			inet_ntoa(pkt->iphdr.ip_src),
 			ntohs(pkt->icmphdr.un.echo.sequence));
@@ -268,7 +274,7 @@ int main(int argc, char *argv[])
 		do {
 			pinfo.pkt_data.icmphdr.un.echo.sequence = htons(sequence);
 			pinfo.pkt_data.icmphdr.checksum = wrapsum(base_sum + sequence);
-			gettimeofday(&start_tv, NULL);
+			clock_gettime(CLOCK_MONOTONIC, &start_ts);
 			lbufnet_output(&pinfo.pkt_data, pinfo.len, pinfo.sync_flag);
 			lbufnet_input(1, pinfo.sync_flag);
 			usleep(pinfo.interval_us);
