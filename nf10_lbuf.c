@@ -710,7 +710,7 @@ static unsigned long __copy_skb_to_lbuf(struct desc *desc, void *buf_addr,
 	 * it has been drained, although it's just copied. I don't know yet
 	 * what timing-related stuff is impacted by such fake early free.
 	 * If not, remove skbq and later gc logic for performance. */
-	if (!skb_shared(skb)) {
+	if (likely(!skb_shared(skb))) {
 		lbuf_cb(skb) = (u64)buf_addr;	/* for gc on irq */
 		skb_queue_tail(&desc->skbq, skb);
 	}
