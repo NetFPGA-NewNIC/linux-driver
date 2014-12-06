@@ -347,12 +347,15 @@ static int nf10_create_netdev(struct pci_dev *pdev,
 		ndev_priv->adapter = adapter;
 		ndev_priv->port_num = i;
 		ndev_priv->port_up = 0;
+		netdev->features |= NETIF_F_SG;
+		printk("features=%lx hw_features=%lx\n", netdev->features, netdev->hw_features);
 
 		if ((err = register_netdev(netdev))) {
 			free_netdev(netdev);
 			pr_err("failed to register netdev\n");
 			goto err_alloc_netdev;
 		}
+		printk("features=%lx hw_features=%lx\n", netdev->features, netdev->hw_features);
 		/* non-NULL netdev[i] if both allocated and registered */
 		adapter->netdev[i] = netdev;
 	}

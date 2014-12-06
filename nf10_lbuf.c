@@ -703,8 +703,19 @@ static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
 static unsigned long __copy_skb_to_lbuf(struct desc *desc, void *buf_addr,
 					int port_num, struct sk_buff *skb)
 {
+	int i;
+	void *p;
 	buf_addr = LBUF_CUR_TX_ADDR(buf_addr, port_num, skb->len);
+#if 0
 	skb_copy_from_linear_data(skb, buf_addr, skb->len);
+#endif
+	skb_copy_from_linear_data(skb, buf_addr, skb_headlen(skb));
+	p = buf_addr + skb_headlen(skb);
+	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+		memcpy(p, page_address(frag->page.p) + frag->page_offset, frag->size);
+		p += frag->size;
+	}
 	buf_addr = LBUF_NEXT_TX_ADDR(buf_addr, skb->len);
 
 	/* XXX: if skb is not shared, managed in skb queue in lbuf for later gc,
@@ -732,6 +743,12 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	u32 cons;
 	u32 avail_size;
 
+#if 0
+	printk("len=%u datalen=%u nr_frags=%u gso_size=%u gso_segs=%u gso_type=%u frag_list=%p\n",
+		skb->len, skb->data_len, skb_shinfo(skb)->nr_frags, skb_shinfo(skb)->gso_size, skb_shinfo(skb)->gso_segs, skb_shinfo(skb)->gso_type, skb_shinfo(skb)->frag_list);
+	if (skb_shinfo(skb)->nr_frags > 0)
+		printk("\tfrag page=%p size=%u offset=%u\n", page_address(skb_shinfo(skb)->frags[0].page.p), skb_shinfo(skb)->frags[0].size, skb_shinfo(skb)->frags[0].page_offset); 
+#endif
 	spin_lock_bh(&desc->lock);
 	prod = get_tx_prod(desc);
 	prod_pvt = get_tx_prod_pvt(desc);
