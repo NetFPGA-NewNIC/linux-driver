@@ -57,6 +57,11 @@
 
 static struct kmem_cache *desc_cache;
 
+struct lbuf_stats {
+	u64 tx_lbufs;
+	u64 tx_bytes;
+};
+
 static struct lbuf_info {
 	struct nf10_adapter *adapter;
 	struct desc *rx_desc[NR_SLOT];
@@ -67,6 +72,9 @@ static struct lbuf_info {
 	/* tx completion buffer */
 	void *tx_completion_kern_addr;
 	dma_addr_t tx_completion_dma_addr;
+
+	struct lbuf_stats stats;
+	struct device_attribute stat_attr;
 } lbuf_info;
 
 /* 
@@ -372,6 +380,30 @@ alloc_fail:
 	return -ENOMEM;
 }
 
+static ssize_t show_lbuf_stat(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct lbuf_info *info = container_of(attr, struct lbuf_info,
+					      stat_attr);
+	struct lbuf_stats *stats = &info->stats;
+
+	sprintf(buf, "tx_lbufs=%llu\ntx_bytes=%llu\ntx_avg_bytes=%llu\n",
+		stats->tx_lbufs, stats->tx_bytes,
+		stats->tx_lbufs ? stats->tx_bytes / stats->tx_lbufs : 0);
+
+	return strlen(buf);
+}
+
+static ssize_t init_lbuf_stat(struct device *dev,
+			     struct device_attribute *attr,
+			     const char *buf, size_t count)
+{
+	struct lbuf_info *info = container_of(attr, struct lbuf_info,
+					      stat_attr);
+	memset(&info->stats, 0, sizeof(info->stats));
+	return count;
+}
+
 static unsigned long nf10_lbuf_get_pfn(struct nf10_adapter *adapter,
 				       unsigned long size)
 {
@@ -454,6 +486,8 @@ static int nf10_lbuf_set_irq_period(struct nf10_adapter *adapter)
 /* nf10_hw_ops functions */
 static int nf10_lbuf_init(struct nf10_adapter *adapter)
 {
+	int err;
+
 	/* create desc pool */
 	desc_cache = kmem_cache_create("lbuf_desc",
 				       sizeof(struct desc),
@@ -475,12 +509,24 @@ static int nf10_lbuf_init(struct nf10_adapter *adapter)
 	adapter->user_ops = &lbuf_user_ops;
 	nf10_lbuf_set_irq_period(adapter);
 
+	lbuf_info.stat_attr.attr.name = "lbuf_stat";
+	lbuf_info.stat_attr.attr.mode = S_IRUGO | S_IWUSR;
+	lbuf_info.stat_attr.show = show_lbuf_stat;
+	lbuf_info.stat_attr.store = init_lbuf_stat;
+
+	sysfs_attr_init(&lbuf_info.stat_attr.attr);
+
+	err = device_create_file(&adapter->pdev->dev, &lbuf_info.stat_attr);
+	if (err)
+		pr_warn("failed to create file for lbuf_stat\n");
+
 	return 0;
 }
 
 static void nf10_lbuf_free(struct nf10_adapter *adapter)
 {
 	kmem_cache_destroy(desc_cache);
+	device_remove_file(&adapter->pdev->dev, &lbuf_info.stat_attr);
 }
 
 static int nf10_lbuf_init_buffers(struct nf10_adapter *adapter)
@@ -684,6 +730,8 @@ static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
 
 	set_tx_used(idx);
 	inc_tx_idx();
+	lbuf_info.stats.tx_lbufs++;
+	lbuf_info.stats.tx_bytes += (prod_pvt - prod);
 	spin_unlock_bh(&desc->lock);
 
 	dma_addr = desc->dma_addr + prod;
@@ -752,9 +800,8 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	prod_pvt = __copy_skb_to_lbuf(desc, desc->kern_addr + prod_pvt,
 				      netdev_port_num(netdev), skb);
 	set_tx_prod_pvt(desc, prod_pvt);
-	spin_unlock_bh(&desc->lock);
-
 	netdev->stats.tx_packets++;
+	spin_unlock_bh(&desc->lock);
 
 	return 0;
 }
