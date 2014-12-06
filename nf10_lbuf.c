@@ -57,10 +57,12 @@
 
 static struct kmem_cache *desc_cache;
 
+static u64 tx_stop_timestamp[CONFIG_NR_PORTS];
 struct lbuf_stats {
 	u64 tx_lbufs;
 	u64 tx_bytes;
 	u32 tx_stops;
+	u64 tx_max_wake_lat[CONFIG_NR_PORTS];
 };
 
 static struct lbuf_info {
@@ -386,6 +388,7 @@ alloc_fail:
 static ssize_t show_lbuf_stat(struct device *dev,
 			      struct device_attribute *attr, char *buf)
 {
+	int i;
 	struct lbuf_info *info = container_of(attr, struct lbuf_info,
 					      stat_attr);
 	struct lbuf_stats *stats = &info->stats;
@@ -394,6 +397,9 @@ static ssize_t show_lbuf_stat(struct device *dev,
 		stats->tx_lbufs, stats->tx_bytes,
 		stats->tx_lbufs ? stats->tx_bytes / stats->tx_lbufs : 0);
 	sprintf(buf + strlen(buf), "tx_stops=%u\n", stats->tx_stops);
+	for (i = 0; i < CONFIG_NR_PORTS; i++)
+		sprintf(buf + strlen(buf), "tx_max_wake_lat[%d]=%llu\n",
+			i, stats->tx_max_wake_lat[i]);
 
 	return strlen(buf);
 }
@@ -820,6 +826,7 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 
 	if (copy_skb_to_lbuf(netdev, skb, desc)) {
 		/* no space available in lbuf */
+		rdtscll(tx_stop_timestamp[netdev_port_num(netdev)]);
 		lbuf_info.stats.tx_stops++;
 		netif_stop_queue(netdev);
 		return NETDEV_TX_BUSY;
@@ -864,9 +871,16 @@ again:
 	lbuf_xmit(adapter, desc);
 
 	/* wake stopped queue */
-	for (i = 0; i < CONFIG_NR_PORTS; i++)
-		if (netif_queue_stopped(adapter->netdev[i]))
+	for (i = 0; i < CONFIG_NR_PORTS; i++) {
+		if (netif_queue_stopped(adapter->netdev[i])) {
+			u64 t;
+			rdtscll(t);
+			t = t - tx_stop_timestamp[i];
+			if (unlikely(t > lbuf_info.stats.tx_max_wake_lat[i]))
+				lbuf_info.stats.tx_max_wake_lat[i] = t;
 			netif_wake_queue(adapter->netdev[i]);
+		}
+	}
 
 	netif_dbg(adapter, tx_done, default_netdev(adapter),
 		  "gctx: gc_addr=%p last=%p cons=%u\n", (void *)gc_addr,
