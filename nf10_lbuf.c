@@ -365,7 +365,6 @@ static int init_rx_lbufs(struct nf10_adapter *adapter)
 	}
 	nf10_lbuf_prepare_rx_all(adapter);
 
-	nf10_writel(adapter, IRQ_PERIOD_REG, 200000);	/* XXX: irq inter-arrival is 200us */
 	return 0;
 
 alloc_fail:
@@ -443,6 +442,15 @@ static struct nf10_user_ops lbuf_user_ops = {
 	.start_xmit		= nf10_lbuf_user_xmit,
 };
 
+static int nf10_lbuf_set_irq_period(struct nf10_adapter *adapter)
+{
+	nf10_writel(adapter, IRQ_PERIOD_REG,
+		    adapter->irq_period_usecs * 1000 /* ns */);
+	netif_dbg(adapter, hw, default_netdev(adapter),
+		  "%u us is set as irq period\n", adapter->irq_period_usecs);
+	return 0;
+}
+
 /* nf10_hw_ops functions */
 static int nf10_lbuf_init(struct nf10_adapter *adapter)
 {
@@ -465,6 +473,8 @@ static int nf10_lbuf_init(struct nf10_adapter *adapter)
 	}
 	lbuf_info.adapter = adapter;
 	adapter->user_ops = &lbuf_user_ops;
+	nf10_lbuf_set_irq_period(adapter);
+
 	return 0;
 }
 
@@ -836,7 +846,8 @@ static struct nf10_hw_ops lbuf_hw_ops = {
 	.process_rx_irq		= nf10_lbuf_process_rx_irq,
 	.start_xmit		= nf10_lbuf_start_xmit,
 	.clean_tx_irq		= nf10_lbuf_clean_tx_irq,
-	.ctrl_irq		= nf10_lbuf_ctrl_irq
+	.ctrl_irq		= nf10_lbuf_ctrl_irq,
+	.set_irq_period		= nf10_lbuf_set_irq_period,
 };
 
 void nf10_lbuf_set_hw_ops(struct nf10_adapter *adapter)

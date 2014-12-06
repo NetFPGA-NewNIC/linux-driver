@@ -69,6 +69,7 @@
 
 u64 nf10_test_dev_addr = 0x000f530dd164;
 
+#define DEFAULT_INTR_PERIOD_USECS	50
 #define DEFAULT_MSG_ENABLE (NETIF_MSG_DRV|NETIF_MSG_PROBE|NETIF_MSG_LINK|NETIF_MSG_IFDOWN|NETIF_MSG_IFUP|NETIF_MSG_RX_ERR)
 static int debug = -1;
 module_param(debug, int, 0);
@@ -426,6 +427,7 @@ static int nf10_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	}
 
 	/* 4. init DMA */
+	adapter->irq_period_usecs = DEFAULT_INTR_PERIOD_USECS;
 	if ((err = nf10_init(adapter))) {
 		pr_err("failed to register hw ops\n");
 		goto err_register_hw_ops;

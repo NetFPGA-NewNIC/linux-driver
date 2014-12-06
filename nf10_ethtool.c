@@ -60,9 +60,31 @@ static void nf10_set_msglevel(struct net_device *netdev, u32 data)
 	adapter->msg_enable = data;
 }
 
+static int nf10_get_coalesce(struct net_device *netdev,
+			     struct ethtool_coalesce *ec)
+{
+	struct nf10_adapter *adapter = netdev_adapter(netdev);
+	ec->rx_coalesce_usecs = adapter->irq_period_usecs;
+
+	return 0;
+}
+
+static int nf10_set_coalesce(struct net_device *netdev,
+			     struct ethtool_coalesce *ec)
+{
+	struct nf10_adapter *adapter = netdev_adapter(netdev);
+	if (!adapter->hw_ops || !adapter->hw_ops->set_irq_period)
+		return -EOPNOTSUPP;
+	adapter->irq_period_usecs = ec->rx_coalesce_usecs;
+
+	return adapter->hw_ops->set_irq_period(adapter);
+}
+
 static const struct ethtool_ops nf10_ethtool_ops = {
 	.get_msglevel           = nf10_get_msglevel,
 	.set_msglevel           = nf10_set_msglevel,
+	.get_coalesce		= nf10_get_coalesce,
+	.set_coalesce		= nf10_set_coalesce,
 };
 
 void nf10_set_ethtool_ops(struct net_device *netdev)

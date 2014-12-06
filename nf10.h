@@ -67,6 +67,7 @@ struct nf10_adapter {
 
 	struct nf10_hw_ops *hw_ops;
 
+	u32 irq_period_usecs;
 	u16 msg_enable;
 #ifdef CONFIG_PHY_INIT
 	atomic_t mdio_access_rdy;
@@ -113,6 +114,7 @@ struct nf10_hw_ops {
 				      struct net_device *dev);
 	int		(*clean_tx_irq)(struct nf10_adapter *adapter);
 	unsigned long	(*ctrl_irq)(struct nf10_adapter *adapter, unsigned long cmd);
+	int		(*set_irq_period)(struct nf10_adapter *adapter);
 };
 
 struct nf10_user_ops {
