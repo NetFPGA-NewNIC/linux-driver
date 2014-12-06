@@ -137,6 +137,8 @@ static struct lbuf_info {
 #define ELAPSED_CYCLES(i)	(0ULL)
 #endif
 
+#define DEFAULT_INTR_PERIOD_USECS	100
+
 /*
  * Memory allocation/free functions:
  */
@@ -478,8 +480,8 @@ static int nf10_lbuf_set_irq_period(struct nf10_adapter *adapter)
 {
 	nf10_writel(adapter, IRQ_PERIOD_REG,
 		    adapter->irq_period_usecs * 1000 /* ns */);
-	netif_dbg(adapter, hw, default_netdev(adapter),
-		  "%u us is set as irq period\n", adapter->irq_period_usecs);
+	netif_info(adapter, probe, default_netdev(adapter),
+		   "%u us is set as irq period\n", adapter->irq_period_usecs);
 	return 0;
 }
 
@@ -507,6 +509,8 @@ static int nf10_lbuf_init(struct nf10_adapter *adapter)
 	}
 	lbuf_info.adapter = adapter;
 	adapter->user_ops = &lbuf_user_ops;
+
+	adapter->irq_period_usecs = DEFAULT_INTR_PERIOD_USECS;
 	nf10_lbuf_set_irq_period(adapter);
 
 	lbuf_info.stat_attr.attr.name = "lbuf_stat";
