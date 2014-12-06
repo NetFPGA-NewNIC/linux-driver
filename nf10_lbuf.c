@@ -60,6 +60,7 @@ static struct kmem_cache *desc_cache;
 struct lbuf_stats {
 	u64 tx_lbufs;
 	u64 tx_bytes;
+	u32 tx_stops;
 };
 
 static struct lbuf_info {
@@ -392,6 +393,7 @@ static ssize_t show_lbuf_stat(struct device *dev,
 	sprintf(buf, "tx_lbufs=%llu\ntx_bytes=%llu\ntx_avg_bytes=%llu\n",
 		stats->tx_lbufs, stats->tx_bytes,
 		stats->tx_lbufs ? stats->tx_bytes / stats->tx_lbufs : 0);
+	sprintf(buf + strlen(buf), "tx_stops=%u\n", stats->tx_stops);
 
 	return strlen(buf);
 }
@@ -818,6 +820,7 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 
 	if (copy_skb_to_lbuf(netdev, skb, desc)) {
 		/* no space available in lbuf */
+		lbuf_info.stats.tx_stops++;
 		netif_stop_queue(netdev);
 		return NETDEV_TX_BUSY;
 	}
