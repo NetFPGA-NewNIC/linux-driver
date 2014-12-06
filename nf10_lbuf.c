@@ -107,7 +107,6 @@ static struct lbuf_info {
 #define get_last_gc_addr()	(lbuf_info.u->last_gc_addr)
 #define set_last_gc_addr(v)	do { lbuf_info.u->last_gc_addr = (unsigned long)v; } while(0)
 
-#define lbuf_cb(skb)		(*(u64 *)&((skb)->cb[32]))
 #define get_tx_last_gc_addr()	LBUF_GC_ADDR(lbuf_info.tx_completion_kern_addr)
 
 #define addr_in_lbuf(d, addr)	(addr > d->dma_addr && addr <= d->dma_addr + d->size)
@@ -140,7 +139,6 @@ static inline void *__alloc_lbuf(struct nf10_adapter *adapter,
 					       &desc->dma_addr);
 	desc->size = size;
 	init_tx_pointers(desc);
-	skb_queue_head_init(&desc->skbq);
 	spin_lock_init(&desc->lock);
 
 	return desc->kern_addr;
@@ -280,10 +278,6 @@ static void free_tx_lbufs(struct nf10_adapter *adapter)
 {
 	int i;
 
-	if (skb_queue_len(&tx_kern_desc()->skbq) > 0)
-		pr_warn("Warning: %d non-freed skbs exist in kernel tx lbuf\n",
-			skb_queue_len(&tx_kern_desc()->skbq));
-	skb_queue_purge(&tx_kern_desc()->skbq);
 	free_lbuf(adapter, tx_kern_desc());
 	pci_free_consistent(adapter->pdev, TX_COMPLETION_SIZE,
 			    lbuf_info.tx_completion_kern_addr,
@@ -690,9 +684,9 @@ static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
 	nf10_writel(adapter, tx_stat_off(idx), nr_qwords);
 
 	netif_dbg(adapter, tx_queued, default_netdev(adapter),
-		  "\trqtx[%u]: c%d l=%u prod=[%u:%u] dma_addr=%p/skbqlen=%u qw=%u\n",
+		  "\trqtx[%u]: c%d l=%u prod=[%u:%u] dma_addr=%p qw=%u\n",
 		  idx, smp_processor_id(), prod_pvt - prod, prod, prod_pvt,
-		  (void *)dma_addr, skb_queue_len(&desc->skbq), nr_qwords);
+		  (void *)dma_addr, nr_qwords);
 #if 0
 	print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_NONE,
 		       16, 1, desc->kern_addr + prod, 128, true);
@@ -706,20 +700,6 @@ static unsigned long __copy_skb_to_lbuf(struct desc *desc, void *buf_addr,
 	buf_addr = LBUF_CUR_TX_ADDR(buf_addr, port_num, skb->len);
 	skb_copy_from_linear_data(skb, buf_addr, skb->len);
 	buf_addr = LBUF_NEXT_TX_ADDR(buf_addr, skb->len);
-
-	/* XXX: if skb is not shared, managed in skb queue in lbuf for later gc,
-	 * alternative is to immediately free it, but its destructor may believe
-	 * it has been drained, although it's just copied. I don't know yet
-	 * what timing-related stuff is impacted by such fake early free.
-	 * If not, remove skbq and later gc logic for performance. */
-	if (likely(!skb_shared(skb))) {
-		lbuf_cb(skb) = (u64)buf_addr;	/* for gc on irq */
-		skb_queue_tail(&desc->skbq, skb);
-	}
-	else	/* for shared skb, promptly release it (e.g., pktgen),
-		   since manipulating shared skb's prev/next crashes system */
-		dev_kfree_skb_any(skb);
-
 	return buf_addr - desc->kern_addr;	/* updated prod_pvt */
 }
 
@@ -782,6 +762,7 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 	}
 	/* now we have copied skb to lbuf */
 	lbuf_xmit(adapter, desc);
+	dev_kfree_skb_any(skb);
 
 	return NETDEV_TX_OK;
 }
@@ -791,7 +772,6 @@ static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 	dma_addr_t gc_addr;
 	u32 cons;
 	struct desc *desc = tx_kern_desc();
-	struct sk_buff *skb;
 	int i;
 
 again:
@@ -818,15 +798,6 @@ again:
 	smp_wmb();
 
 	lbuf_xmit(adapter, desc);
-
-	/* garbage collect lbuf-linked skbs */
-	while((skb = skb_dequeue(&desc->skbq))) {
-		netif_dbg(adapter, tx_done, default_netdev(adapter),
-			  "gcskb: %p\n", skb);
-		dev_kfree_skb_any(skb);
-		if (lbuf_cb(skb) == (u64)gc_addr)
-			break;
-	}
 
 	/* wake stopped queue */
 	for (i = 0; i < CONFIG_NR_PORTS; i++)
