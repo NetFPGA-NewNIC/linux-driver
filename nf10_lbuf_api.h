@@ -184,6 +184,26 @@ union lbuf_header {
 	(lh.is_closed && (lh.nr_qwords << 1) == dword_idx - NR_RESERVED_DWORDS)
 #define LBUF_128B_ALIGN(dword_idx)	ALIGN(dword_idx, 32)
 
+/* offset to bar2 address of the card */
+#define RX_LBUF_ADDR_BASE	0x40
+#define RX_LBUF_STAT_BASE	0x60
+#define RX_READY		0x1
+#define TX_LBUF_ADDR_BASE	0x80
+#define TX_LBUF_STAT_BASE	0xA0
+#define TX_COMPLETION_ADDR	0xB0
+#define TX_COMPLETION_SIZE	((NR_SLOT << 2) + 8)	/* DWORD for each desc + QWORD (last gc addr) */
+#define IRQ_ENABLE_REG		0x20
+#define IRQ_DISABLE_REG		0x24
+#define IRQ_PERIOD_REG		0x28
+#define IRQ_CTRL_VAL		0xcacabeef
+#define TX_WRITEBACK_REG	0xB8
+#define RX_WRITEBACK_REG	0x78
+
+#define rx_addr_off(i)	(RX_LBUF_ADDR_BASE + (i << 3))
+#define rx_stat_off(i)	(RX_LBUF_STAT_BASE + (i << 2))
+#define tx_addr_off(i)	(TX_LBUF_ADDR_BASE + (i << 3))
+#define tx_stat_off(i)	(TX_LBUF_STAT_BASE + (i << 2))
+
 #define TX_AVAIL		0xcacabeef
 #define TX_USED			0		/* not HW-dependent could be any value but TX_AVAIL */
 #define TX_LAST_GC_ADDR_OFFSET	(NR_SLOT << 2)		/* last gc addr following completion buffers for all descs */

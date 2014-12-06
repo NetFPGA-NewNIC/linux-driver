@@ -112,8 +112,8 @@ static inline void xmit_packet_pci(void)
 	LBUF_TX_COMPLETION(tx_completion, idx) = TX_USED;
 	inc_idx(ld->tx_idx);
 	/* XXX: need __sync_synchronize() here? */
-	*((uint64_t *)(pci_base_addr + 0x80 + (idx << 3))) = ld->tx_dma_addr[ref_prod];
-	*((uint32_t *)(pci_base_addr + 0xA0 + (idx << 2))) = tx_offset >> 3;
+	*((uint64_t *)(pci_base_addr + tx_addr_off(idx))) = ld->tx_dma_addr[ref_prod];
+	*((uint32_t *)(pci_base_addr + tx_stat_off(idx))) = tx_offset >> 3;
 }
 
 static inline void prepare_rx_lbuf_ioctl(void)
@@ -125,8 +125,8 @@ static inline void prepare_rx_lbuf_pci(void)
 {
 	uint32_t idx = ld->rx_idx;
 	/* XXX: need __sync_synchronize() here? */
-	*((uint64_t *)(pci_base_addr + 0x40 + (idx << 3))) = ld->rx_dma_addr[idx];
-	*((uint32_t *)(pci_base_addr + 0x60 + (idx << 2))) = 0xcacabeef;
+	*((uint64_t *)(pci_base_addr + rx_addr_off(idx))) = ld->rx_dma_addr[idx];
+	*((uint32_t *)(pci_base_addr + rx_stat_off(idx))) = 0xcacabeef;
 }
 
 static char *get_pci_filename(void)
