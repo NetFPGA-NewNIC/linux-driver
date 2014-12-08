@@ -80,6 +80,8 @@ static struct lbuf_info {
 	struct device_attribute stat_attr;
 } lbuf_info;
 
+#define DEFAULT_INTR_PERIOD_USECS	100
+
 /* 
  * helper macros for prod/cons pointers and descriptors
  */
@@ -126,7 +128,6 @@ static struct lbuf_info {
 #ifdef CONFIG_PROFILE
 /* WARN: note that it does not do bound check for performance */
 #define DEFINE_TIMESTAMP(n)	u64	_t1, _t2, _total[n] = {0}
-#define CLEAR_TIMESTAMP(n)	do { int i; for (i = 0; i < n; i++) _total[i] = 0; } while(0)
 #define START_TIMESTAMP(i)	rdtscll(_t1)
 #define STOP_TIMESTAMP(i)	\
 	do {	\
@@ -141,7 +142,8 @@ static struct lbuf_info {
 #define ELAPSED_CYCLES(i)	(0ULL)
 #endif
 
-#define DEFAULT_INTR_PERIOD_USECS	100
+#define NR_TIMESTAMPS	4
+DEFINE_TIMESTAMP(NR_TIMESTAMPS);
 
 /*
  * Memory allocation/free functions:
@@ -397,14 +399,25 @@ static ssize_t show_lbuf_stat(struct device *dev,
 	struct lbuf_info *info = container_of(attr, struct lbuf_info,
 					      stat_attr);
 	struct lbuf_stats *stats = &info->stats;
+	unsigned long rx_bytes = 0;
 
 	sprintf(buf, "tx_lbufs=%llu\ntx_bytes=%llu\ntx_avg_bytes=%llu\n",
 		stats->tx_lbufs, stats->tx_bytes,
 		stats->tx_lbufs ? stats->tx_bytes / stats->tx_lbufs : 0);
 	sprintf(buf + strlen(buf), "tx_stops=%u\n", stats->tx_stops);
-	for (i = 0; i < CONFIG_NR_PORTS; i++)
+	for (i = 0; i < CONFIG_NR_PORTS; i++) {
 		sprintf(buf + strlen(buf), "tx_max_wake_lat[%d]=%llu\n",
 			i, stats->tx_max_wake_lat[i]);
+		rx_bytes += info->adapter->netdev[i]->stats.rx_bytes;
+	}
+	if (rx_bytes > 0) {
+		sprintf(buf + strlen(buf), "rx_cycles_per_KB rx_alloc=%llu"
+			" copy=%llu zero=%llu stack=%llu\n",
+			(ELAPSED_CYCLES(0) << 10) / rx_bytes,
+			(ELAPSED_CYCLES(1) << 10) / rx_bytes,
+			(ELAPSED_CYCLES(2) << 10) / rx_bytes,
+			(ELAPSED_CYCLES(3) << 10) / rx_bytes);
+	}
 
 	return strlen(buf);
 }
@@ -582,8 +595,6 @@ static void move_to_next_lbuf(struct nf10_adapter *adapter)
 	set_rx_cons(NR_RESERVED_DWORDS);
 }
 
-#define NR_TIMESTAMPS	4
-DEFINE_TIMESTAMP(NR_TIMESTAMPS);
 static void deliver_packet(struct net_device *netdev, void *pkt_addr,
 		unsigned int pkt_len, struct sk_buff **pskb, int *work_done)
 {
@@ -613,6 +624,7 @@ static void deliver_packet(struct net_device *netdev, void *pkt_addr,
 	STOP_TIMESTAMP(3);
 
 	netdev->stats.rx_packets++;
+	netdev->stats.rx_bytes += pkt_len;
 	(*work_done)++;
 	(*pskb) = NULL;
 
@@ -636,7 +648,6 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 		return;
 	}
 
-	//CLEAR_TIMESTAMP(NR_TIMESTAMPS);
 	do {
 		skb = NULL;
 		buf_addr = cur_rx_desc()->kern_addr;
@@ -729,9 +740,8 @@ wait_to_end_recv:
 	} while(*work_done < budget);
 
 	netif_dbg(adapter, rx_status, default_netdev(adapter),
-		  "loop exit: i=%u n=%d rx=%lu ac=%llu cp=%llu zr=%llu dp=%llu\n",
-		  dword_idx, *work_done, likely(netdev) ? netdev->stats.rx_packets : 0,
-		  ELAPSED_CYCLES(0), ELAPSED_CYCLES(1), ELAPSED_CYCLES(2), ELAPSED_CYCLES(3));
+		  "loop exit: i=%u n=%d rx=%lu\n", dword_idx, *work_done,
+		  likely(netdev) ? netdev->stats.rx_packets : 0);
 }
 
 static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
@@ -832,6 +842,7 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 				      netdev_port_num(netdev), skb);
 	set_tx_prod_pvt(desc, prod_pvt);
 	netdev->stats.tx_packets++;
+	netdev->stats.tx_bytes += pkt_len;
 	spin_unlock_bh(&desc->lock);
 
 	return 0;
