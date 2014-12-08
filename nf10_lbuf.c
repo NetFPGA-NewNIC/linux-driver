@@ -126,6 +126,7 @@ static struct lbuf_info {
 #ifdef CONFIG_PROFILE
 /* WARN: note that it does not do bound check for performance */
 #define DEFINE_TIMESTAMP(n)	u64	_t1, _t2, _total[n] = {0}
+#define CLEAR_TIMESTAMP(n)	do { int i; for (i = 0; i < n; i++) _total[i] = 0; } while(0)
 #define START_TIMESTAMP(i)	rdtscll(_t1)
 #define STOP_TIMESTAMP(i)	\
 	do {	\
@@ -581,6 +582,8 @@ static void move_to_next_lbuf(struct nf10_adapter *adapter)
 	set_rx_cons(NR_RESERVED_DWORDS);
 }
 
+#define NR_TIMESTAMPS	4
+DEFINE_TIMESTAMP(NR_TIMESTAMPS);
 static void deliver_packet(struct net_device *netdev, void *pkt_addr,
 		unsigned int pkt_len, struct sk_buff **pskb, int *work_done)
 {
@@ -593,13 +596,21 @@ static void deliver_packet(struct net_device *netdev, void *pkt_addr,
 
 	//pr_debug("dps: %p l=%u wd=%d\n", pkt_addr, pkt_len, *work_done);
 
+	START_TIMESTAMP(1);
 	skb_copy_to_linear_data(skb, pkt_addr, pkt_len);
-	memset(pkt_addr - 8, 0, ALIGN(pkt_len, 8) + 8);
+	STOP_TIMESTAMP(1);
+
+	START_TIMESTAMP(2);
+	memset(pkt_addr - LBUF_TX_METADATA_SIZE, 0,
+	       ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE);
+	STOP_TIMESTAMP(2);
+
+	START_TIMESTAMP(3);
 	skb_put(skb, pkt_len);
 	skb->protocol = eth_type_trans(skb, netdev);
 	skb->ip_summed = CHECKSUM_NONE;
-
 	napi_gro_receive(&adapter->napi, skb);
+	STOP_TIMESTAMP(3);
 
 	netdev->stats.rx_packets++;
 	(*work_done)++;
@@ -617,7 +628,7 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 	int port_num;
 	void *pkt_addr;
 	unsigned int pkt_len, next_pkt_len;
-	struct net_device *netdev;
+	struct net_device *netdev = NULL;
 	union lbuf_header lh;
 
 	if (nf10_user_callback(adapter, 1)) {
@@ -625,6 +636,7 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 		return;
 	}
 
+	//CLEAR_TIMESTAMP(NR_TIMESTAMPS);
 	do {
 		skb = NULL;
 		buf_addr = cur_rx_desc()->kern_addr;
@@ -663,7 +675,9 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 		 * meaning the current packet starts being received */
 		netdev = adapter->netdev[port_num];
 		if (unlikely(!skb)) { /* skb becomes NULL if delieved */
+			START_TIMESTAMP(0);
 			skb = netdev_alloc_skb_ip_align(netdev, pkt_len);
+			STOP_TIMESTAMP(0);
 			if (unlikely(!skb)) {
 				netif_err(adapter, rx_err, netdev,
 					"failed to alloc skb (l=%u)", pkt_len);
@@ -715,8 +729,9 @@ wait_to_end_recv:
 	} while(*work_done < budget);
 
 	netif_dbg(adapter, rx_status, default_netdev(adapter),
-		  "loop exit: i=%u wd=%d rxaddr=%p\n",
-		  dword_idx, *work_done, &DWORD_GET(cur_rx_desc()->dma_addr, dword_idx));
+		  "loop exit: i=%u n=%d rx=%lu ac=%llu cp=%llu zr=%llu dp=%llu\n",
+		  dword_idx, *work_done, likely(netdev) ? netdev->stats.rx_packets : 0,
+		  ELAPSED_CYCLES(0), ELAPSED_CYCLES(1), ELAPSED_CYCLES(2), ELAPSED_CYCLES(3));
 }
 
 static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
