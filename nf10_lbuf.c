@@ -235,6 +235,10 @@ static int init_tx_lbufs(struct nf10_adapter *adapter)
 	BUG_ON(tx_kern_desc());
 	if (!(tx_kern_desc() = alloc_lbuf(adapter, LBUF_TX_SIZE)))
 		return -ENOMEM;
+	netif_info(adapter, probe, default_netdev(adapter),
+		   "TX kern lbuf allocated at kern_addr=%p/dma_addr=%p"
+		   " (size=%u bytes)\n", tx_kern_desc()->kern_addr,
+		   (void *)tx_kern_desc()->dma_addr, tx_kern_desc()->size);
 
 	/* tx completion DMA-coherent buffer */
 	lbuf_info.tx_completion_kern_addr =
@@ -422,16 +426,16 @@ static unsigned long nf10_lbuf_get_pfn(struct nf10_adapter *adapter,
 
 	if (idx == 0) {		/* metadata page */
 		pfn = virt_to_phys(lbuf_info.u) >> PAGE_SHIFT;
-		netif_dbg(adapter, drv, default_netdev(adapter),
-			  "%s: [%u] DMA metadata page (pfn=%lx)\n",
-			  __func__, idx, pfn);
+		netif_info(adapter, drv, default_netdev(adapter),
+			   "%s: [%u] DMA metadata page (pfn=%lx)\n",
+			   __func__, idx, pfn);
 	}
 	else if (idx == 1) {
 		void *addr = lbuf_info.tx_completion_kern_addr;
 		pfn = virt_to_phys(addr) >> PAGE_SHIFT;
-		netif_dbg(adapter, drv, default_netdev(adapter),
-			  "%s: [%u] DMA tx completion area (pfn=%lx)\n",
-			  __func__, idx, pfn);
+		netif_info(adapter, drv, default_netdev(adapter),
+			   "%s: [%u] DMA tx completion area (pfn=%lx)\n",
+			   __func__, idx, pfn);
 	}
 	else {			/* data pages */
 		idx -= 2;	/* adjust index to data */
@@ -440,9 +444,9 @@ static unsigned long nf10_lbuf_get_pfn(struct nf10_adapter *adapter,
 		else if (idx >= NR_SLOT)
 			pfn = get_tx_user_lbuf(adapter, idx - NR_SLOT, size);
 			
-		netif_dbg(adapter, drv, default_netdev(adapter),
-			  "%s: [%u] data page (pfn=%lx size=%lu)\n",
-			  __func__, adapter->nr_user_mmap, pfn, size);
+		netif_info(adapter, drv, default_netdev(adapter),
+			   "%s: [%u] data page (pfn=%lx size=%lu)\n",
+			   __func__, adapter->nr_user_mmap, pfn, size);
 	}
 	return pfn;
 }
