@@ -61,13 +61,13 @@
 #define DEV_FNAME	"/dev/" NF10_DRV_NAME
 #ifdef DEBUG
 #define dprintf(format, arg...)	\
-	do { printf(NF10_DRV_NAME ": " format, ##arg); } while(0)
+	do { printf(NF10_DRV_NAME ": " format, ##arg); } while (0)
 #else
 #define dprintf
 #endif
 
 #define eprintf(format, arg...)	\
-	do { fprintf(stderr, NF10_DRV_NAME ": " format, ##arg); } while(0)
+	do { fprintf(stderr, NF10_DRV_NAME ": " format, ##arg); } while (0)
 
 static int fd;
 static struct lbuf_user *ld;	/* lbuf descriptor */
@@ -308,7 +308,7 @@ static void clean_tx(void)
 		dprintf("%s: ref_cons=%d ref_prod=%d by gc_addr %p (last=%d)\n",
 		      __func__, ref_cons, ref_prod, (void *)gc_addr, last);
 		inc_txbuf_ref(ref_cons);
-	} while(!last && ref_cons != ref_prod);
+	} while (!last && ref_cons != ref_prod);
 	ld->last_gc_addr = gc_addr;
 }
 
@@ -394,7 +394,7 @@ wait_to_end_recv:
 		}
 		if (unlikely(ld->rx_cons >= (LBUF_RX_SIZE >> 2)))
 			move_to_next_lbuf(buf_addr);
-	} while(nr_packets == LBUFNET_INPUT_FOREVER || rx_packets < nr_packets);
+	} while (nr_packets == LBUFNET_INPUT_FOREVER || rx_packets < nr_packets);
 
 	return rx_packets;
 }
@@ -416,7 +416,7 @@ int lbufnet_flush(int sync_flags)
 	if (unlikely(tx_offset == 0))
 		return -1;
 
-	while(LBUF_TX_COMPLETION(tx_completion, ld->tx_idx) != TX_AVAIL) {
+	while (LBUF_TX_COMPLETION(tx_completion, ld->tx_idx) != TX_AVAIL) {
 		if (sync_flags == SF_NON_BLOCK)
 			return 0;
 		if (sync_flags == SF_BUSY_BLOCK) {
@@ -458,7 +458,7 @@ int lbufnet_write(void *data, unsigned int len, int sync_flags)
 	}
 avail_check:
 	clean_tx();
-	while(!tx_avail[ref_prod]) {
+	while (!tx_avail[ref_prod]) {
 		if (!tx_avail[ref_prod]) {
 			if (sync_flags == SF_NON_BLOCK)
 				return 0;
