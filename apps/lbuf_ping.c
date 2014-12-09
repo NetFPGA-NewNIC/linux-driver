@@ -57,7 +57,7 @@
 #define MODE_PING	0
 #define MODE_PONG	1
 
-#define MAX_PAYLOAD_SIZE	2048
+#define MAX_PAYLOAD_SIZE	1472
 struct packet {
 	struct ether_header ethhdr;
 	struct ip iphdr;
@@ -73,8 +73,8 @@ struct ping_info {
 	int mode;
 	uint64_t count;
 	uint32_t interval_us;
-	uint8_t len;
-	uint8_t datalen;
+	uint16_t len;
+	uint16_t datalen;
 	uint8_t checksum;
 	uint32_t sync_flag;
 	struct packet pkt_data;
@@ -262,6 +262,10 @@ int main(int argc, char *argv[])
 			break;
 		case 'l':
 			pinfo.datalen = atoi(optarg);
+			if (pinfo.datalen > MAX_PAYLOAD_SIZE) {
+				fprintf(stderr, "datalen cannot exceed %d\n", MAX_PAYLOAD_SIZE);
+				return -1;
+			}
 			break;
 		case 'f':
 			pinfo.sync_flag = atoi(optarg);
