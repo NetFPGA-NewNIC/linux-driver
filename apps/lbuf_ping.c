@@ -50,6 +50,7 @@
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
 #include <arpa/inet.h>
+#include <stdlib.h>	/* atof */
 
 #include "lbufnet.h"
 
