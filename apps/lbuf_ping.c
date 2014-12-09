@@ -74,6 +74,7 @@ struct ping_info {
 	uint32_t interval_us;
 	uint8_t len;
 	uint8_t datalen;
+	uint8_t checksum;
 	uint32_t sync_flag;
 	struct packet pkt_data;
 } pinfo = {
@@ -82,6 +83,7 @@ struct ping_info {
 	.interval_us = 1000000,	/* 1 sec */
 	.datalen = 56,		/* same default as ping */
 	.sync_flag = SF_BLOCK,
+	.checksum = 1,
 };
 
 struct timespec start_ts, end_ts;
@@ -153,20 +155,34 @@ void init_packet(struct ping_info *pinfo)
 	eh->ether_type	= htons(ETHERTYPE_IP);
 }
 
-int input_handler(void *data, unsigned int len)
+static int input_handler(void *data, unsigned int len)
 {
 	struct packet *pkt = data;
 	struct timespec ts;
+	uint16_t icmplen;
 
 	if (pkt->iphdr.ip_p != IPPROTO_ICMP)
 		return 0;
 
+	if (pinfo.mode == MODE_PING &&
+	    (pkt->icmphdr.type != ICMP_ECHOREPLY ||
+	     pkt->icmphdr.un.echo.id != echo_id))
+		return 0;
+
+	if (pinfo.mode == MODE_PONG &&
+	    pkt->icmphdr.type != ICMP_ECHO)
+		return 0;
+
+	icmplen = len - sizeof(struct ether_header) - sizeof(struct ip);
+	/* check if checksum is correct */
+	if (pinfo.checksum && wrapsum(checksum(&pkt->icmphdr, icmplen, 0)) != 0) {
+		fprintf(stderr, "ping request received, but ICMP checksum is incorrect!\n");
+		return 1;
+	}
+
 	if (pinfo.mode == MODE_PING) {
 		double elapsed_ms;
 
-		if (pkt->icmphdr.type != ICMP_ECHOREPLY ||
-		    pkt->icmphdr.un.echo.id != echo_id)
-			return 0;
 		clock_gettime(CLOCK_MONOTONIC, &end_ts);
 		ts.tv_sec = end_ts.tv_sec - start_ts.tv_sec;
 		ts.tv_nsec = end_ts.tv_nsec - start_ts.tv_nsec;
@@ -185,16 +201,6 @@ int input_handler(void *data, unsigned int len)
 	else if (pinfo.mode == MODE_PONG) {
 		struct in_addr ip_tmp;
 		uint8_t mac_tmp[ETH_ALEN];
-		uint16_t icmplen;
-
-		if (pkt->icmphdr.type != ICMP_ECHO)
-			return 0;
-		icmplen = len - sizeof(struct ether_header) - sizeof(struct ip);
-		/* check if checksum is correct */
-		if (wrapsum(checksum(&pkt->icmphdr, icmplen, 0)) != 0) {
-			fprintf(stderr, "ping request received, but ICMP checksum is incorrect!\n");
-			return 1;
-		}
 
 		pkt->icmphdr.type = ICMP_ECHOREPLY;
 		pkt->icmphdr.checksum = 0;
@@ -205,7 +211,8 @@ int input_handler(void *data, unsigned int len)
 		memcpy(mac_tmp, pkt->ethhdr.ether_shost, ETH_ALEN);
 		memcpy(pkt->ethhdr.ether_shost, pkt->ethhdr.ether_dhost, ETH_ALEN);
 		memcpy(pkt->ethhdr.ether_dhost, mac_tmp, ETH_ALEN);
-		pkt->icmphdr.checksum = wrapsum(checksum(&pkt->icmphdr, icmplen, 0));
+		if (pinfo.checksum)
+			pkt->icmphdr.checksum = wrapsum(checksum(&pkt->icmphdr, icmplen, 0));
 
 		lbufnet_output(data, len, pinfo.sync_flag);
 		clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -229,7 +236,7 @@ int main(int argc, char *argv[])
 	};
 	int opt;
 
-	while ((opt = getopt(argc, argv, "s:d:S:D:n:f:m:i:l:p")) != -1) {
+	while ((opt = getopt(argc, argv, "s:d:S:D:n:f:m:i:l:pc:")) != -1) {
 		switch(opt) {
 		case 's':
 			pinfo.src_ip = optarg;
@@ -261,6 +268,9 @@ int main(int argc, char *argv[])
 		case 'p':
 			conf.pci_direct_access = 1;
 			break;
+		case 'c':
+			pinfo.checksum = atoi(optarg);
+			break;
 		}
 	}
 	if (lbufnet_init(&conf)) {
@@ -283,7 +293,8 @@ int main(int argc, char *argv[])
 		sequence = 1;
 		do {
 			pinfo.pkt_data.icmphdr.un.echo.sequence = htons(sequence);
-			pinfo.pkt_data.icmphdr.checksum = wrapsum(base_sum + sequence);
+			if (pinfo.checksum)
+				pinfo.pkt_data.icmphdr.checksum = wrapsum(base_sum + sequence);
 			clock_gettime(CLOCK_MONOTONIC, &start_ts);
 			lbufnet_output(&pinfo.pkt_data, pinfo.len, pinfo.sync_flag);
 			lbufnet_input(1, pinfo.sync_flag);
