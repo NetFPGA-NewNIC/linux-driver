@@ -347,15 +347,13 @@ static int nf10_create_netdev(struct pci_dev *pdev,
 		ndev_priv->adapter = adapter;
 		ndev_priv->port_num = i;
 		ndev_priv->port_up = 0;
-		netdev->features |= NETIF_F_SG;
-		printk("features=%lx hw_features=%lx\n", netdev->features, netdev->hw_features);
+		netdev->features |= NETIF_F_SG;	/* to enable gso, fake SG */
 
 		if ((err = register_netdev(netdev))) {
 			free_netdev(netdev);
 			pr_err("failed to register netdev\n");
 			goto err_alloc_netdev;
 		}
-		printk("features=%lx hw_features=%lx\n", netdev->features, netdev->hw_features);
 		/* non-NULL netdev[i] if both allocated and registered */
 		adapter->netdev[i] = netdev;
 	}
@@ -496,11 +494,32 @@ static struct pci_device_id pci_id[] = {
 };
 MODULE_DEVICE_TABLE(pci, pci_id);
 
-pci_ers_result_t nf10_pcie_error(struct pci_dev *dev, 
+pci_ers_result_t nf10_pcie_error(struct pci_dev *pdev, 
 				 enum pci_channel_state state)
 {
-	/* TODO */
-	return PCI_ERS_RESULT_RECOVERED;
+	pr_err("nf10: pcie error is detected: state=%u\n", state);
+
+	return PCI_ERS_RESULT_NONE;
+#if 0	/* reset handler is needed to enable the following */
+	struct nf10_adapter *adapter = pci_get_drvdata(pdev);
+	int i;
+
+	pr_err("nf10: pcie error is detected: state=%u\n", state);
+
+	for (i = 0; i < CONFIG_NR_PORTS; i++)
+		netif_device_detach(adapter->netdev[i]);
+
+	if (state == pci_channel_io_perm_failure)
+		return PCI_ERS_RESULT_DISCONNECT;
+
+	for (i = 0; i < CONFIG_NR_PORTS; i++)
+		if (netif_running(adapter->netdev[i]))
+			nf10_down(adapter->netdev[i]);
+
+	pci_disable_device(pdev);
+
+	return PCI_ERS_RESULT_NEED_RESET;
+#endif
 }
 
 static struct pci_error_handlers pcie_err_handlers = {

@@ -124,13 +124,13 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 	unsigned int mask = 0;
 
 	/* if irq is disabled, enable again before waiting */
-	if (adapter->user_flags & UF_IRQ_DISABLED) {
+	if (adapter->user_flags & UF_IRQ_DISABLED &&
+	    !(adapter->user_flags & (UF_TX_PENDING | UF_RX_PENDING))) {
+		netif_dbg(adapter, intr, default_netdev(adapter),
+			  "enable irq before poll_wait w/o pending events\n");
 		adapter->user_flags &= ~UF_IRQ_DISABLED;
 		nf10_enable_irq(adapter);
 	}
-	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "poll wait w/ irq enabled\n");
-
 	poll_wait(f, &adapter->user_rx_wq, wait);
 	poll_wait(f, &adapter->user_tx_wq, wait);
 
@@ -138,16 +138,14 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 	 * called in napi thread. So, irq has been already disabled */
 	if (adapter->user_flags & UF_RX_PENDING) {
 		adapter->user_flags &= ~UF_RX_PENDING;
-		adapter->user_flags |= UF_IRQ_DISABLED;
 		mask |= (POLLIN | POLLRDNORM);
 	}
 	if (adapter->user_flags & UF_TX_PENDING) {
 		adapter->user_flags &= ~UF_TX_PENDING;
-		adapter->user_flags |= UF_IRQ_DISABLED;
 		mask |= (POLLOUT | POLLWRNORM);
 	}
-	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "poll wake-up w/ mask=%x\n", mask);
+	netif_dbg(adapter, intr, default_netdev(adapter),
+		  "nf10_poll mask=%x\n", mask);
 	return mask;
 }
 
@@ -396,12 +394,10 @@ bool nf10_user_callback(struct nf10_adapter *adapter, int rx)
 	/* if direct user access mode is enabled, just wake up
 	 * a waiting user thread */
 	if (adapter->user_flags & UF_USER_ON) { 
-		adapter->user_flags |= flag;
-		if (waitqueue_active(q)) {
-			netif_dbg(adapter, drv, default_netdev(adapter),
-				  "wake up a task for %s\n", rx ? "rx" : "tx");
-			wake_up(q);
-		}
+		adapter->user_flags |= flag | UF_IRQ_DISABLED;
+		netif_dbg(adapter, intr, default_netdev(adapter),
+			  "wake up a task for %s\n", rx ? "rx" : "tx");
+		wake_up(q);
 		return true;
 	}
 	return false;

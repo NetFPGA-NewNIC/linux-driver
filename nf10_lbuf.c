@@ -80,6 +80,8 @@ static struct lbuf_info {
 	struct device_attribute stat_attr;
 } lbuf_info;
 
+#define DEFAULT_INTR_PERIOD_USECS	100
+
 /* 
  * helper macros for prod/cons pointers and descriptors
  */
@@ -140,7 +142,8 @@ static struct lbuf_info {
 #define ELAPSED_CYCLES(i)	(0ULL)
 #endif
 
-#define DEFAULT_INTR_PERIOD_USECS	100
+#define NR_TIMESTAMPS	4
+DEFINE_TIMESTAMP(NR_TIMESTAMPS);
 
 /*
  * Memory allocation/free functions:
@@ -235,6 +238,10 @@ static int init_tx_lbufs(struct nf10_adapter *adapter)
 	BUG_ON(tx_kern_desc());
 	if (!(tx_kern_desc() = alloc_lbuf(adapter, LBUF_TX_SIZE)))
 		return -ENOMEM;
+	netif_info(adapter, probe, default_netdev(adapter),
+		   "TX kern lbuf allocated at kern_addr=%p/dma_addr=%p"
+		   " (size=%u bytes)\n", tx_kern_desc()->kern_addr,
+		   (void *)tx_kern_desc()->dma_addr, tx_kern_desc()->size);
 
 	/* tx completion DMA-coherent buffer */
 	lbuf_info.tx_completion_kern_addr =
@@ -392,14 +399,25 @@ static ssize_t show_lbuf_stat(struct device *dev,
 	struct lbuf_info *info = container_of(attr, struct lbuf_info,
 					      stat_attr);
 	struct lbuf_stats *stats = &info->stats;
+	unsigned long rx_bytes = 0;
 
 	sprintf(buf, "tx_lbufs=%llu\ntx_bytes=%llu\ntx_avg_bytes=%llu\n",
 		stats->tx_lbufs, stats->tx_bytes,
 		stats->tx_lbufs ? stats->tx_bytes / stats->tx_lbufs : 0);
 	sprintf(buf + strlen(buf), "tx_stops=%u\n", stats->tx_stops);
-	for (i = 0; i < CONFIG_NR_PORTS; i++)
+	for (i = 0; i < CONFIG_NR_PORTS; i++) {
 		sprintf(buf + strlen(buf), "tx_max_wake_lat[%d]=%llu\n",
 			i, stats->tx_max_wake_lat[i]);
+		rx_bytes += info->adapter->netdev[i]->stats.rx_bytes;
+	}
+	if (rx_bytes > 0) {
+		sprintf(buf + strlen(buf), "rx_cycles_per_KB rx_alloc=%llu"
+			" copy=%llu zero=%llu stack=%llu\n",
+			(ELAPSED_CYCLES(0) << 10) / rx_bytes,
+			(ELAPSED_CYCLES(1) << 10) / rx_bytes,
+			(ELAPSED_CYCLES(2) << 10) / rx_bytes,
+			(ELAPSED_CYCLES(3) << 10) / rx_bytes);
+	}
 
 	return strlen(buf);
 }
@@ -422,16 +440,16 @@ static unsigned long nf10_lbuf_get_pfn(struct nf10_adapter *adapter,
 
 	if (idx == 0) {		/* metadata page */
 		pfn = virt_to_phys(lbuf_info.u) >> PAGE_SHIFT;
-		netif_dbg(adapter, drv, default_netdev(adapter),
-			  "%s: [%u] DMA metadata page (pfn=%lx)\n",
-			  __func__, idx, pfn);
+		netif_info(adapter, drv, default_netdev(adapter),
+			   "%s: [%u] DMA metadata page (pfn=%lx)\n",
+			   __func__, idx, pfn);
 	}
 	else if (idx == 1) {
 		void *addr = lbuf_info.tx_completion_kern_addr;
 		pfn = virt_to_phys(addr) >> PAGE_SHIFT;
-		netif_dbg(adapter, drv, default_netdev(adapter),
-			  "%s: [%u] DMA tx completion area (pfn=%lx)\n",
-			  __func__, idx, pfn);
+		netif_info(adapter, drv, default_netdev(adapter),
+			   "%s: [%u] DMA tx completion area (pfn=%lx)\n",
+			   __func__, idx, pfn);
 	}
 	else {			/* data pages */
 		idx -= 2;	/* adjust index to data */
@@ -440,9 +458,9 @@ static unsigned long nf10_lbuf_get_pfn(struct nf10_adapter *adapter,
 		else if (idx >= NR_SLOT)
 			pfn = get_tx_user_lbuf(adapter, idx - NR_SLOT, size);
 			
-		netif_dbg(adapter, drv, default_netdev(adapter),
-			  "%s: [%u] data page (pfn=%lx size=%lu)\n",
-			  __func__, adapter->nr_user_mmap, pfn, size);
+		netif_info(adapter, drv, default_netdev(adapter),
+			   "%s: [%u] data page (pfn=%lx size=%lu)\n",
+			   __func__, adapter->nr_user_mmap, pfn, size);
 	}
 	return pfn;
 }
@@ -589,15 +607,24 @@ static void deliver_packet(struct net_device *netdev, void *pkt_addr,
 
 	//pr_debug("dps: %p l=%u wd=%d\n", pkt_addr, pkt_len, *work_done);
 
+	START_TIMESTAMP(1);
 	skb_copy_to_linear_data(skb, pkt_addr, pkt_len);
-	memset(pkt_addr - 8, 0, ALIGN(pkt_len, 8) + 8);
+	STOP_TIMESTAMP(1);
+
+	START_TIMESTAMP(2);
+	memset(pkt_addr - LBUF_TX_METADATA_SIZE, 0,
+	       ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE);
+	STOP_TIMESTAMP(2);
+
+	START_TIMESTAMP(3);
 	skb_put(skb, pkt_len);
 	skb->protocol = eth_type_trans(skb, netdev);
 	skb->ip_summed = CHECKSUM_NONE;
-
 	napi_gro_receive(&adapter->napi, skb);
+	STOP_TIMESTAMP(3);
 
 	netdev->stats.rx_packets++;
+	netdev->stats.rx_bytes += pkt_len;
 	(*work_done)++;
 	(*pskb) = NULL;
 
@@ -613,7 +640,7 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 	int port_num;
 	void *pkt_addr;
 	unsigned int pkt_len, next_pkt_len;
-	struct net_device *netdev;
+	struct net_device *netdev = NULL;
 	union lbuf_header lh;
 
 	if (nf10_user_callback(adapter, 1)) {
@@ -659,7 +686,9 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 		 * meaning the current packet starts being received */
 		netdev = adapter->netdev[port_num];
 		if (unlikely(!skb)) { /* skb becomes NULL if delieved */
+			START_TIMESTAMP(0);
 			skb = netdev_alloc_skb_ip_align(netdev, pkt_len);
+			STOP_TIMESTAMP(0);
 			if (unlikely(!skb)) {
 				netif_err(adapter, rx_err, netdev,
 					"failed to alloc skb (l=%u)", pkt_len);
@@ -711,8 +740,8 @@ wait_to_end_recv:
 	} while(*work_done < budget);
 
 	netif_dbg(adapter, rx_status, default_netdev(adapter),
-		  "loop exit: i=%u wd=%d rxaddr=%p\n",
-		  dword_idx, *work_done, &DWORD_GET(cur_rx_desc()->dma_addr, dword_idx));
+		  "loop exit: i=%u n=%d rx=%lu\n", dword_idx, *work_done,
+		  likely(netdev) ? netdev->stats.rx_packets : 0);
 }
 
 static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
@@ -770,9 +799,6 @@ static unsigned long __copy_skb_to_lbuf(struct desc *desc, void *buf_addr,
 	int i;
 	void *p;
 	buf_addr = LBUF_CUR_TX_ADDR(buf_addr, port_num, skb->len);
-#if 0
-	skb_copy_from_linear_data(skb, buf_addr, skb->len);
-#endif
 	skb_copy_from_linear_data(skb, buf_addr, skb_headlen(skb));
 	p = buf_addr + skb_headlen(skb);
 	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
@@ -793,12 +819,6 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	u32 cons;
 	u32 avail_size;
 
-#if 0
-	printk("len=%u datalen=%u nr_frags=%u gso_size=%u gso_segs=%u gso_type=%u frag_list=%p\n",
-		skb->len, skb->data_len, skb_shinfo(skb)->nr_frags, skb_shinfo(skb)->gso_size, skb_shinfo(skb)->gso_segs, skb_shinfo(skb)->gso_type, skb_shinfo(skb)->frag_list);
-	if (skb_shinfo(skb)->nr_frags > 0)
-		printk("\tfrag page=%p size=%u offset=%u\n", page_address(skb_shinfo(skb)->frags[0].page.p), skb_shinfo(skb)->frags[0].size, skb_shinfo(skb)->frags[0].page_offset); 
-#endif
 	spin_lock_bh(&desc->lock);
 	prod = get_tx_prod(desc);
 	prod_pvt = get_tx_prod_pvt(desc);
@@ -830,6 +850,7 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 				      netdev_port_num(netdev), skb);
 	set_tx_prod_pvt(desc, prod_pvt);
 	netdev->stats.tx_packets++;
+	netdev->stats.tx_bytes += pkt_len;
 	spin_unlock_bh(&desc->lock);
 
 	return 0;
