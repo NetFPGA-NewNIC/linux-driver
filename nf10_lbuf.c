@@ -778,6 +778,11 @@ static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
 	dma_addr = desc->dma_addr + prod;
  	nr_qwords = (prod_pvt - prod) >> 3;
 
+	if (unlikely(!IS_ALIGNED(dma_addr, 4096))) {
+		pr_err("Error: cannot send 4K-unaligned buffer:%p\n",
+		       (void *)dma_addr);
+		return -EINVAL;
+	}
 	wmb();
 	nf10_writeq(adapter, tx_addr_off(idx), dma_addr);
 	nf10_writel(adapter, tx_stat_off(idx), nr_qwords);
