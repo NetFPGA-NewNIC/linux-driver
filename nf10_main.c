@@ -348,6 +348,7 @@ static int nf10_create_netdev(struct pci_dev *pdev,
 		ndev_priv->port_num = i;
 		ndev_priv->port_up = 0;
 		netdev->features |= NETIF_F_SG;	/* to enable gso, fake SG */
+		netdev->hw_features = netdev->features;
 
 		if ((err = register_netdev(netdev))) {
 			free_netdev(netdev);
