@@ -842,10 +842,11 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	}
 	/* check to safely produce packet by examining cons */
 	cons = get_tx_cons(desc);
-	avail_size = (cons > prod_pvt ? 0 : desc->size) + cons - prod_pvt - 8;
+	avail_size = (cons > prod_pvt ? 0 : desc->size) + cons - prod_pvt;
+
 	//pr_debug("%s: prod_pvt=%u cons=%u avail=%u req_size=%u pkt_len=%u\n", __func__,
 	//	 prod_pvt, cons, avail_size, ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE, pkt_len);
-	if (ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE > avail_size) {
+	if (ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE + 128 > avail_size) {
 		spin_unlock_bh(&desc->lock);
 		return -EBUSY;
 	}
