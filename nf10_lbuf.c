@@ -831,7 +831,7 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	if (!LBUF_HAS_TX_ROOM(desc->size, prod_pvt, pkt_len)) {
 		/* if unsent packets exist, return with busy, since
 		 * discontrigous packets are not allowed to be sent as a lbuf */
-		if (prod != prod_pvt) {
+		if (prod != prod_pvt || get_tx_cons(desc) == 0) {
 			spin_unlock_bh(&desc->lock);
 			return -EBUSY;
 		}
