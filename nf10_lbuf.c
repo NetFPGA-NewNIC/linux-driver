@@ -768,7 +768,8 @@ static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
 		next_prod = 0;
 	set_tx_prod(desc, next_prod);
 	set_tx_prod_pvt(desc, next_prod);
-	pr_debug("x: p=%u p'=%u c=%u\n", next_prod, next_prod, get_tx_cons(desc));
+	if (unlikely(next_prod == get_tx_cons(desc)))
+		pr_err("Error: overtaking cons (p=%u c=%u)\n", next_prod, get_tx_cons(desc));
 
 	set_tx_used(idx);
 	inc_tx_idx();
@@ -852,7 +853,7 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 
 	//pr_debug("%s: prod_pvt=%u cons=%u avail=%u req_size=%u pkt_len=%u\n", __func__,
 	//	 prod_pvt, cons, avail_size, ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE, pkt_len);
-	if (ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE + 128 > avail_size) {
+	if (ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE + 4096 > avail_size) {
 		spin_unlock_bh(&desc->lock);
 		return -EBUSY;
 	}
@@ -861,7 +862,9 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	prod_pvt = __copy_skb_to_lbuf(desc, desc->kern_addr + prod_pvt,
 				      netdev_port_num(netdev), skb);
 	set_tx_prod_pvt(desc, prod_pvt);
-	pr_debug("c: p=%u p'=%u c=%u\n", prod_pvt, prod, cons);
+
+	if (unlikely(prod_pvt > cons && prod < cons))
+		pr_err("Error: overwritten (p=%u p'=%u c=%u a=%u)\n", prod_pvt, prod, cons, avail_size);
 	netdev->stats.tx_packets++;
 	netdev->stats.tx_bytes += pkt_len;
 	spin_unlock_bh(&desc->lock);
