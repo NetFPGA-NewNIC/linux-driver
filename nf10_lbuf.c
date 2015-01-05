@@ -832,31 +832,17 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	spin_lock_bh(&desc->lock);
 	prod = get_tx_prod(desc);
 	prod_pvt = get_tx_prod_pvt(desc);
-	cons = get_tx_cons(desc);
 	/* check if need to wrap around by examining tail room */
-	if (!LBUF_HAS_TX_ROOM(desc->size, prod_pvt, pkt_len)) {
-		/* if unsent packets exist, return with busy, since
-		 * discontrigous packets are not allowed to be sent as a lbuf */
-		if (prod != prod_pvt || cons == 0) {
-			pr_debug("b: p=%u p'=%u c=%u\n", prod_pvt, prod, cons);
-			spin_unlock_bh(&desc->lock);
-			return -EBUSY;
-		}
-		/* now ensure all pending packets have been sent, wrap around */
-		prod = prod_pvt = 0;
-		set_tx_prod(desc, prod);
-		set_tx_prod_pvt(desc, prod_pvt);
-		pr_debug("w: p=%u p'=%u c=%u\n", prod_pvt, prod, cons);
-	}
+	if (!LBUF_HAS_TX_ROOM(desc->size, prod_pvt, pkt_len))
+		goto no_buf_space;
 	/* check to safely produce packet by examining cons */
+	cons = get_tx_cons(desc);
 	avail_size = (cons > prod_pvt ? 0 : desc->size) + cons - prod_pvt;
 
 	//pr_debug("%s: prod_pvt=%u cons=%u avail=%u req_size=%u pkt_len=%u\n", __func__,
 	//	 prod_pvt, cons, avail_size, ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE, pkt_len);
-	if (ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE + 4096 > avail_size) {
-		spin_unlock_bh(&desc->lock);
-		return -EBUSY;
-	}
+	if (ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE + 4096 > avail_size)
+		goto no_buf_space;
 
 	/* now we have enough room to copy the packet */
 	prod_pvt = __copy_skb_to_lbuf(desc, desc->kern_addr + prod_pvt,
@@ -870,6 +856,10 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	spin_unlock_bh(&desc->lock);
 
 	return 0;
+
+no_buf_space:
+	spin_unlock_bh(&desc->lock);
+	return -EBUSY;
 }
 
 static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
@@ -936,10 +926,8 @@ again:
 	cons = ALIGN(gc_addr - desc->dma_addr, 4096);
 	if (cons == desc->size)
 		cons = 0;
-	spin_lock_bh(&desc->lock);
 	set_tx_cons(desc, cons);
-	pr_debug("i: p=%u p'=%u c=%u\n", get_tx_prod_pvt(desc), get_tx_prod(desc), cons);
-	spin_unlock_bh(&desc->lock);
+	smp_wmb();
 
 	lbuf_xmit(adapter, desc);
 
