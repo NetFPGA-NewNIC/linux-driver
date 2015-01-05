@@ -768,6 +768,7 @@ static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
 		next_prod = 0;
 	set_tx_prod(desc, next_prod);
 	set_tx_prod_pvt(desc, next_prod);
+	pr_debug("x: p=%u p'=%u c=%u\n", next_prod, next_prod, get_tx_cons(desc));
 
 	set_tx_used(idx);
 	inc_tx_idx();
@@ -824,14 +825,19 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	u32 cons;
 	u32 avail_size;
 
+	if (unlikely(pkt_len == 0))
+		return 0;
+
 	spin_lock_bh(&desc->lock);
 	prod = get_tx_prod(desc);
 	prod_pvt = get_tx_prod_pvt(desc);
+	cons = get_tx_cons(desc);
 	/* check if need to wrap around by examining tail room */
 	if (!LBUF_HAS_TX_ROOM(desc->size, prod_pvt, pkt_len)) {
 		/* if unsent packets exist, return with busy, since
 		 * discontrigous packets are not allowed to be sent as a lbuf */
-		if (prod != prod_pvt || get_tx_cons(desc) == 0) {
+		if (prod != prod_pvt || cons == 0) {
+			pr_debug("b: p=%u p'=%u c=%u\n", prod_pvt, prod, cons);
 			spin_unlock_bh(&desc->lock);
 			return -EBUSY;
 		}
@@ -839,9 +845,9 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 		prod = prod_pvt = 0;
 		set_tx_prod(desc, prod);
 		set_tx_prod_pvt(desc, prod_pvt);
+		pr_debug("w: p=%u p'=%u c=%u\n", prod_pvt, prod, cons);
 	}
 	/* check to safely produce packet by examining cons */
-	cons = get_tx_cons(desc);
 	avail_size = (cons > prod_pvt ? 0 : desc->size) + cons - prod_pvt;
 
 	//pr_debug("%s: prod_pvt=%u cons=%u avail=%u req_size=%u pkt_len=%u\n", __func__,
@@ -855,6 +861,7 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	prod_pvt = __copy_skb_to_lbuf(desc, desc->kern_addr + prod_pvt,
 				      netdev_port_num(netdev), skb);
 	set_tx_prod_pvt(desc, prod_pvt);
+	pr_debug("c: p=%u p'=%u c=%u\n", prod_pvt, prod, cons);
 	netdev->stats.tx_packets++;
 	netdev->stats.tx_bytes += pkt_len;
 	spin_unlock_bh(&desc->lock);
@@ -888,12 +895,29 @@ static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 	u32 cons;
 	struct desc *desc = tx_kern_desc();
 	int i;
+	u64 t;
+	static bool tx_hang;
 
 again:
 	rmb();
 	gc_addr = get_tx_last_gc_addr();
-	if (gc_addr == get_last_gc_addr())
+	if (gc_addr == get_last_gc_addr()) {
+#if 0
+		if (unlikely(tx_hang))
+			return 1;	/* fake clean completed */
+		if (!netif_queue_stopped(adapter->netdev[0]))
+			goto out;
+		/* for tx hang debug: XXX only port 0 */
+		rdtscll(t);
+		t = t - tx_stop_timestamp[0];
+		if (unlikely(t > 10000000000)) {
+			pr_err("Error: tx might hang w/ prod_pvt=%u prod=%u cons=%u\n",
+			       get_tx_prod_pvt(desc), get_tx_prod(desc), get_tx_cons(desc));
+			tx_hang = true;
+		}
+#endif
 		goto out;
+	}
 
 	if (nf10_user_callback(adapter, 0))
 		return 1;	/* forcing napi to end */
@@ -909,15 +933,16 @@ again:
 	cons = ALIGN(gc_addr - desc->dma_addr, 4096);
 	if (cons == desc->size)
 		cons = 0;
+	spin_lock_bh(&desc->lock);
 	set_tx_cons(desc, cons);
-	smp_wmb();
+	pr_debug("i: p=%u p'=%u c=%u\n", get_tx_prod_pvt(desc), get_tx_prod(desc), cons);
+	spin_unlock_bh(&desc->lock);
 
 	lbuf_xmit(adapter, desc);
 
 	/* wake stopped queue */
 	for (i = 0; i < CONFIG_NR_PORTS; i++) {
 		if (netif_queue_stopped(adapter->netdev[i])) {
-			u64 t;
 			rdtscll(t);
 			t = t - tx_stop_timestamp[i];
 			if (unlikely(t > lbuf_info.stats.tx_max_wake_lat[i]))
