@@ -57,12 +57,10 @@
 
 static struct kmem_cache *desc_cache;
 
-static u64 tx_stop_timestamp[CONFIG_NR_PORTS];
 struct lbuf_stats {
 	u64 tx_lbufs;
 	u64 tx_bytes;
 	u32 tx_stops;
-	u64 tx_max_wake_lat[CONFIG_NR_PORTS];
 };
 
 static struct lbuf_info {
@@ -405,11 +403,8 @@ static ssize_t show_lbuf_stat(struct device *dev,
 		stats->tx_lbufs, stats->tx_bytes,
 		stats->tx_lbufs ? stats->tx_bytes / stats->tx_lbufs : 0);
 	sprintf(buf + strlen(buf), "tx_stops=%u\n", stats->tx_stops);
-	for (i = 0; i < CONFIG_NR_PORTS; i++) {
-		sprintf(buf + strlen(buf), "tx_max_wake_lat[%d]=%llu\n",
-			i, stats->tx_max_wake_lat[i]);
+	for (i = 0; i < CONFIG_NR_PORTS; i++)
 		rx_bytes += info->adapter->netdev[i]->stats.rx_bytes;
-	}
 	if (rx_bytes > 0) {
 		sprintf(buf + strlen(buf), "rx_cycles_per_KB rx_alloc=%llu"
 			" copy=%llu zero=%llu stack=%llu\n",
@@ -872,7 +867,6 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 
 	if (copy_skb_to_lbuf(netdev, skb, desc)) {
 		/* no space available in lbuf */
-		rdtscll(tx_stop_timestamp[netdev_port_num(netdev)]);
 		lbuf_info.stats.tx_stops++;
 		netif_stop_queue(netdev);
 		return NETDEV_TX_BUSY;
@@ -890,29 +884,12 @@ static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 	u32 cons;
 	struct desc *desc = tx_kern_desc();
 	int i;
-	u64 t;
-	static bool tx_hang;
 
 again:
 	rmb();
 	gc_addr = get_tx_last_gc_addr();
-	if (gc_addr == get_last_gc_addr()) {
-#if 0
-		if (unlikely(tx_hang))
-			return 1;	/* fake clean completed */
-		if (!netif_queue_stopped(adapter->netdev[0]))
-			goto out;
-		/* for tx hang debug: XXX only port 0 */
-		rdtscll(t);
-		t = t - tx_stop_timestamp[0];
-		if (unlikely(t > 10000000000)) {
-			pr_err("Error: tx might hang w/ prod_pvt=%u prod=%u cons=%u\n",
-			       get_tx_prod_pvt(desc), get_tx_prod(desc), get_tx_cons(desc));
-			tx_hang = true;
-		}
-#endif
+	if (gc_addr == get_last_gc_addr())
 		goto out;
-	}
 
 	if (nf10_user_callback(adapter, 0))
 		return 1;	/* forcing napi to end */
@@ -934,15 +911,9 @@ again:
 	lbuf_xmit(adapter, desc);
 
 	/* wake stopped queue */
-	for (i = 0; i < CONFIG_NR_PORTS; i++) {
-		if (netif_queue_stopped(adapter->netdev[i])) {
-			rdtscll(t);
-			t = t - tx_stop_timestamp[i];
-			if (unlikely(t > lbuf_info.stats.tx_max_wake_lat[i]))
-				lbuf_info.stats.tx_max_wake_lat[i] = t;
+	for (i = 0; i < CONFIG_NR_PORTS; i++)
+		if (netif_queue_stopped(adapter->netdev[i]))
 			netif_wake_queue(adapter->netdev[i]);
-		}
-	}
 
 	netif_dbg(adapter, tx_done, default_netdev(adapter),
 		  "gctx: gc_addr=%p last=%p cons=%u\n", (void *)gc_addr,
