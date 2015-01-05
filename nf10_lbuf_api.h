@@ -128,7 +128,7 @@ struct lbuf_user {
 })
 #define LBUF_NEXT_TX_ADDR(buf_addr, pkt_len)	(void *)ALIGN(((unsigned long)buf_addr + pkt_len), 8)
 #define LBUF_HAS_TX_ROOM(buf_size, buf_offset, pkt_size)	\
-	(buf_offset + pkt_size + LBUF_TX_METADATA_SIZE <= buf_size)
+	(ALIGN(buf_offset + LBUF_TX_METADATA_SIZE + pkt_size, 8) <= buf_size)
 /* for user to poll if tx buffer is available, check if the first packet's pkt_len == 0.
  * gc handler sets pkt_len to zero if tx lbuf is allocated for user rather than releasing it */
 #define LBUF_IS_TX_AVAIL(buf_addr)	(DWORD_GET_ONCE(buf_addr, 1) == 0)
