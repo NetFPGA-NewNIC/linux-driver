@@ -769,7 +769,8 @@ static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
 	set_tx_prod(desc, next_prod);
 	set_tx_prod_pvt(desc, next_prod);
 	if (unlikely(next_prod == get_tx_cons(desc)))
-		pr_err("Error: overtaking cons (p=%u c=%u)\n", next_prod, get_tx_cons(desc));
+		pr_err("Error: overtaking cons (p=%u c=%u)\n",
+			next_prod, get_tx_cons(desc));
 
 	set_tx_used(idx);
 	inc_tx_idx();
@@ -850,7 +851,8 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	set_tx_prod_pvt(desc, prod_pvt);
 
 	if (unlikely(prod_pvt > cons && prod < cons))
-		pr_err("Error: overwritten (p=%u p'=%u c=%u a=%u)\n", prod_pvt, prod, cons, avail_size);
+		pr_err("Error: overwritten (p=%u p'=%u c=%u a=%u)\n",
+		       prod_pvt, prod, cons, avail_size);
 	netdev->stats.tx_packets++;
 	netdev->stats.tx_bytes += pkt_len;
 	spin_unlock_bh(&desc->lock);
