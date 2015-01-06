@@ -51,9 +51,9 @@
 #include <dirent.h>
 #include <sys/stat.h>
 
+#include <lbufnet.h>
 #include "nf10_lbuf_api.h"
 #include "nf10_user.h"
-#include "lbufnet.h"
 
 #define likely(x)      __builtin_expect(!!(x), 1)
 #define unlikely(x)    __builtin_expect(!!(x), 0)
@@ -63,7 +63,7 @@
 #define dprintf(format, arg...)	\
 	do { printf(NF10_DRV_NAME ": " format, ##arg); } while (0)
 #else
-#define dprintf
+#define dprintf(format, arg...)
 #endif
 
 #define eprintf(format, arg...)	\
@@ -141,7 +141,7 @@ static char *get_pci_filename(void)
 		perror("opendir");
 		return NULL;
 	}
-	while (ep = readdir(dp)) {
+	while ((ep = readdir(dp))) {
 		snprintf(path, 128, "%s/%s/resource2", base_dir, ep->d_name);
 		if (stat(path, &st) == 0)
 			return strdup(path);
@@ -152,6 +152,7 @@ static char *get_pci_filename(void)
 int lbufnet_exit(void);
 static void lbufnet_finish(int sig)
 {
+	(void)sig;
 	if (exit_cb) {
 		lbufnet_stat.nr_drops = lh.nr_drops - prev_nr_drops;
 		exit_cb(&lbufnet_stat);
@@ -274,11 +275,13 @@ int lbufnet_exit(void)
 int lbufnet_register_input_callback(lbufnet_input_cb cb)
 {
 	input_cb = cb;
+	return 0;
 }
 
 int lbufnet_register_exit_callback(lbufnet_exit_cb cb)
 {
 	exit_cb = cb;
+	return 0;
 }
 
 static inline void move_to_next_lbuf(void *buf_addr)

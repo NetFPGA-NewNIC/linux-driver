@@ -228,9 +228,6 @@ static int input_handler(void *data, unsigned int len)
 
 int main(int argc, char *argv[])
 {
-	uint64_t ret;
-	int i;
-	unsigned int batched_size;
 	struct lbufnet_conf conf = {
 		.tx_lbuf_size = 4096,	/* 4K tx buffer */
 		.pci_direct_access = 0,	/* use ioctl by default */

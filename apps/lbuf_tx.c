@@ -42,6 +42,7 @@
 #include <sys/ioctl.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
 #include <net/ethernet.h>
 #include <netinet/ether.h>
 #include <netinet/in.h>
@@ -144,8 +145,7 @@ void init_packet(struct packet_info *pinfo)
 
 int main(int argc, char *argv[])
 {
-	uint64_t ret;
-	int i;
+	uint32_t i;
 	unsigned int batched_size;
 	int opt;
 	struct lbufnet_conf conf = { .pci_direct_access = 0 };

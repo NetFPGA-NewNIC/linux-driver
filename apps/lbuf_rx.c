@@ -55,7 +55,7 @@
 #include <sys/ioctl.h>
 #include <sys/time.h>
 
-#include "lbufnet.h"
+#include <lbufnet.h>
 
 unsigned long total_rx_packets, total_rx_bytes;
 struct timeval start_tv, end_tv;
@@ -83,6 +83,7 @@ void show_stat(struct lbufnet_stat *s)
 
 int input_handler(void *data, unsigned int len)
 {
+	(void)data;
 	if (total_rx_packets == 0)
 		gettimeofday(&start_tv, NULL);
 	else
