@@ -78,7 +78,7 @@ static struct lbuf_info {
 	struct device_attribute stat_attr;
 } lbuf_info;
 
-#define DEFAULT_INTR_PERIOD_USECS	100
+#define DEFAULT_INTR_PERIOD_USECS	0
 
 /* 
  * helper macros for prod/cons pointers and descriptors
