@@ -763,10 +763,6 @@ static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
 		next_prod = 0;
 	set_tx_prod(desc, next_prod);
 	set_tx_prod_pvt(desc, next_prod);
-	if (unlikely(next_prod == get_tx_cons(desc)))
-		pr_err("Error: overtaking cons (p=%u c=%u)\n",
-			next_prod, get_tx_cons(desc));
-
 	set_tx_used(idx);
 	inc_tx_idx();
 	lbuf_info.stats.tx_lbufs++;
