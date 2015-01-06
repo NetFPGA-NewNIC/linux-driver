@@ -1,12 +1,12 @@
 PROGRAMS	:= lbuf_tx lbuf_rx lbuf_ping
 INSTALLDIR	:= /usr/local/bin
-LDFLAGS		:= -llbufnet
+LDFLAGS		:= -L../lib -llbufnet
 
 ifeq ($(DEBUG),y)
 CFLAGS += -g -DDEBUG
 endif
 
-CFLAGS += -O2 -Wall -Wextra -Werror -Wunreachable-code
+CFLAGS += -O2 -Wall -I../include -Wextra -Werror -Wunreachable-code
 
 all: $(PROGRAMS)
 

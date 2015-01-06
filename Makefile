@@ -40,7 +40,9 @@
 #
 #
 
-KERNEL_DIR ?= /lib/modules/$(shell uname -r)/build
+KERNEL_VER	?= $(shell uname -r)
+KERNEL_DIR	?= /lib/modules/$(KERNEL_VER)/build
+INSTALL_DIR	?= /lib/modules/$(KERNEL_VER)/extra/nf10/
 
 obj-m += nf10.o
 nf10-objs += nf10_main.o
@@ -74,8 +76,30 @@ ifeq ($(CONFIG_NR_PORTS),)
 endif
 ccflags-y += -DCONFIG_NR_PORTS=$(CONFIG_NR_PORTS)
 
-all:
+all: modules lib
+
+.PHONY: modules
+modules:
 	make -C $(KERNEL_DIR) M=$(PWD) modules
 
+.PHONY: lib
+lib:
+	make -C lib all
+
+.PHONY: modules_install
+modules_install: modules
+	install -o root -g root -m 0755 -d $(INSTALL_DIR)
+	install -o root -g root -m 0755 nf10.ko $(INSTALL_DIR)
+	depmod -a $(KERNEL_VER)
+
+.PHONY: lib_install
+lib_install: lib
+	make -C lib install
+
+.PHONY: install
+install: modules_install lib_install
+
+.PHONY: clean
 clean:
 	make -C $(KERNEL_DIR) M=$(PWD) clean
+	make -C lib clean
