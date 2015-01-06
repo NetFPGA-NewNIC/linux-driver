@@ -51,6 +51,12 @@
 #define NF10_VENDOR_ID	0x10ee
 #define NF10_DEVICE_ID	0x4245
 
+/* user_flags */
+#define UF_USER_ON	0x01
+#define UF_IRQ_DISABLED	0x02
+#define UF_RX_PENDING	0x04
+#define UF_TX_PENDING	0x08
+
 struct nf10_adapter {
 	struct napi_struct napi;
 	struct net_device *netdev[CONFIG_NR_PORTS];
@@ -61,16 +67,18 @@ struct nf10_adapter {
 
 	struct nf10_hw_ops *hw_ops;
 
+	u32 irq_period_usecs;
 	u16 msg_enable;
 #ifdef CONFIG_PHY_INIT
 	atomic_t mdio_access_rdy;
 #endif
 	/* direct user access (kernel bypass) */
 	struct nf10_user_ops *user_ops;
-	unsigned long user_private;
 	struct cdev cdev;
+	u32 user_flags;
 	unsigned int nr_user_mmap;
-	wait_queue_head_t wq_user_intr;
+	wait_queue_head_t user_rx_wq;
+	wait_queue_head_t user_tx_wq;
 	/* AXI register interface */
 	dma_addr_t axi_completion_dma_addr;
 	void *axi_completion_kern_addr;
@@ -87,8 +95,12 @@ struct nf10_netdev_priv {
 #define netdev_port_num(netdev)	(get_netdev_priv(netdev)->port_num)
 #define netdev_port_up(netdev)	(get_netdev_priv(netdev)->port_up)
 
-#define IRQ_CTRL_DISABLE	0
-#define IRQ_CTRL_ENABLE		1
+/* interrupt control commands used for nf10_hw_ops->ctrl_irq */
+enum {
+	IRQ_CTRL_ENABLE = 0,
+	IRQ_CTRL_DISABLE,
+	NR_IRQ_CTRL,
+};
 
 struct nf10_hw_ops {
 	int		(*init)(struct nf10_adapter *adapter);
@@ -102,13 +114,16 @@ struct nf10_hw_ops {
 				      struct net_device *dev);
 	int		(*clean_tx_irq)(struct nf10_adapter *adapter);
 	unsigned long	(*ctrl_irq)(struct nf10_adapter *adapter, unsigned long cmd);
+	int		(*set_irq_period)(struct nf10_adapter *adapter);
 };
 
 struct nf10_user_ops {
-	u64		(*init)(struct nf10_adapter *adapter);
+	unsigned long	(*init)(struct nf10_adapter *adapter, unsigned long arg);
+	unsigned long	(*exit)(struct nf10_adapter *adapter, unsigned long arg);
 	unsigned long	(*get_pfn)(struct nf10_adapter *adapter, unsigned long arg);
 	void		(*prepare_rx_buffer)(struct nf10_adapter *adapter,
-					     unsigned long arg);
+					     unsigned long size);
+	int		(*start_xmit)(struct nf10_adapter *adapter, unsigned long arg);
 };
 
 static inline void nf10_writel(struct nf10_adapter *adapter, int off, u32 val)
@@ -122,5 +137,7 @@ static inline void nf10_writeq(struct nf10_adapter *adapter, int off, u64 val)
 }
 
 extern void nf10_set_ethtool_ops(struct net_device *netdev);
+void nf10_enable_irq(struct nf10_adapter *adapter);
+void nf10_disable_irq(struct nf10_adapter *adapter);
 
 #endif

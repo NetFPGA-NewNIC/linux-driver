@@ -25,11 +25,6 @@
 *	 some software overheads of copy-and-expand skb. It could be relieved by
 *	 using lbuf at TX side as well.
 *
-*	 TODO:
-*		- RX latency optimization: per-packet interrupt/polling once DMA
-*		is revised.
-*		- TX batching when available TX descriptor doesn't exist
-*
 *	 This code is initially developed for the Network-as-a-Service (NaaS) project.
 *	 (under development in https://github.com/NetFPGA-NewNIC/linux-driver)
 *
@@ -62,56 +57,70 @@
 
 static struct kmem_cache *desc_cache;
 
-struct large_buffer {
-	struct desc descs[2][NR_LBUF];	/* 0=TX and 1=RX */
-	unsigned int prod[2], cons[2];
+struct lbuf_stats {
+	u64 tx_lbufs;
+	u64 tx_bytes;
+	u32 tx_stops;
+};
+
+static struct lbuf_info {
+	struct nf10_adapter *adapter;
+	struct desc *rx_desc[NR_SLOT];
+	struct desc *tx_kern_desc;
+	struct desc *tx_user_desc[NR_TX_USER_LBUF];
+	struct lbuf_user *u;
 
 	/* tx completion buffer */
 	void *tx_completion_kern_addr;
 	dma_addr_t tx_completion_dma_addr;
-};
 
-static struct lbuf_hw {
-	struct nf10_adapter *adapter;
-	struct large_buffer lbuf;
-} lbuf_hw;
-#define get_lbuf()	(&lbuf_hw.lbuf)
+	struct lbuf_stats stats;
+	struct device_attribute stat_attr;
+} lbuf_info;
+
+#define DEFAULT_INTR_PERIOD_USECS	100
 
 /* 
  * helper macros for prod/cons pointers and descriptors
  */
-#define prod(rx)	(get_lbuf()->prod[rx])
-#define cons(rx)	(get_lbuf()->cons[rx])
-#define tx_prod()	prod(TX)
-#define rx_prod()	prod(RX)
-#define tx_cons()	cons(TX)
-#define rx_cons()	cons(RX)
+#define rx_idx()		(lbuf_info.u->rx_idx)
+#define tx_idx()		(lbuf_info.u->tx_idx)
+#define inc_rx_idx()		inc_idx(rx_idx())
+#define inc_tx_idx()		inc_idx(tx_idx())
 
-#define inc_prod(rx)	inc_pointer(prod(rx))
-#define inc_cons(rx)	inc_pointer(cons(rx))
-#define inc_tx_prod()	inc_prod(TX)
-#define inc_rx_prod()	inc_prod(RX)
-#define inc_tx_cons()	inc_cons(TX)
-#define inc_rx_cons()	inc_cons(RX)
+#define get_rx_desc(idx)	(lbuf_info.rx_desc[idx])
+#define set_rx_desc(idx, d)	do { lbuf_info.rx_desc[idx] = d; } while(0)
+#define cur_rx_desc()		get_rx_desc(rx_idx())
 
-#define get_desc(rx, pointer)	(&(get_lbuf()->descs[rx][pointer]))
-#define prod_desc(rx)		get_desc(rx, prod(rx))
-#define cons_desc(rx)		get_desc(rx, cons(rx))
-#define tx_prod_desc()		prod_desc(TX)
-#define rx_prod_desc()		prod_desc(RX)
-#define tx_cons_desc()		cons_desc(TX)
-#define rx_cons_desc()		cons_desc(RX)
+#define get_tx_completion(idx)	LBUF_TX_COMPLETION(lbuf_info.tx_completion_kern_addr, idx)
+#define get_tx_avail(idx)	(get_tx_completion(idx) == TX_AVAIL)
+#define set_tx_avail(idx)	do { get_tx_completion(idx) = TX_AVAIL; } while(0)
+#define set_tx_used(idx)	do { get_tx_completion(idx) = TX_USED; } while(0)
 
-#define tx_completion_kern_addr()	(get_lbuf()->tx_completion_kern_addr)
-#define tx_completion_dma_addr()	(get_lbuf()->tx_completion_dma_addr)
+/* following get/set accessors are for pointer management inside a lbuf */
+#define get_rx_cons()		(lbuf_info.u->rx_cons)
+#define set_rx_cons(v)		do { lbuf_info.u->rx_cons = v; } while(0)
 
-spinlock_t tx_lock;
+#define tx_kern_desc()		(lbuf_info.tx_kern_desc)
+#define tx_user_desc(ref)	(lbuf_info.tx_user_desc[ref])
+#define get_tx_prod(d)		(d->tx_prod)
+#define set_tx_prod(d, v)	do { d->tx_prod = v; } while(0)
+#define get_tx_prod_pvt(d)	(d->tx_prod_pvt)
+#define set_tx_prod_pvt(d, v)	do { d->tx_prod_pvt = v; } while(0)
+#define get_tx_cons(d)		(d->tx_cons)
+#define set_tx_cons(d, v)	do { d->tx_cons = v; } while(0)
+#define init_tx_pointers(d)	do { set_tx_prod(desc, 0); set_tx_prod_pvt(desc, 0); set_tx_cons(desc, 0); } while(0)
+#define tx_clean_completed(d)	(get_tx_prod(d) == get_tx_cons(d))
+#define tx_pending(d)		(get_tx_prod_pvt(d) - get_tx_prod(d) > 0)
+#define set_tx_dma_addr(i, v)	do { lbuf_info.u->tx_dma_addr[i] = v; } while(0)
+#define set_rx_dma_addr(i, v)	do { lbuf_info.u->rx_dma_addr[i] = v; } while(0)
 
-/* garbage collection of tx buffer */
-struct lbuf_head pending_gc_head;
-#define get_tx_last_gc_addr()	(tx_completion_kern_addr() + TX_LAST_GC_ADDR_OFFSET)
+#define get_last_gc_addr()	(lbuf_info.u->last_gc_addr)
+#define set_last_gc_addr(v)	do { lbuf_info.u->last_gc_addr = (unsigned long)v; } while(0)
 
-static unsigned long debug_count;	/* for debug */
+#define get_tx_last_gc_addr()	LBUF_GC_ADDR(lbuf_info.tx_completion_kern_addr)
+
+#define addr_in_lbuf(d, addr)	(addr > d->dma_addr && addr <= d->dma_addr + d->size)
 
 /* profiling memcpy performance */
 #ifdef CONFIG_PROFILE
@@ -131,252 +140,171 @@ static unsigned long debug_count;	/* for debug */
 #define ELAPSED_CYCLES(i)	(0ULL)
 #endif
 
-static inline void *alloc_lbuf(struct nf10_adapter *adapter, struct desc *desc)
-{
-#ifndef CONFIG_LBUF_COHERENT
-	struct page *page;
+#define NR_TIMESTAMPS	4
+DEFINE_TIMESTAMP(NR_TIMESTAMPS);
 
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
-	page = alloc_pages(GFP_TRANSHUGE | GFP_ATOMIC, LBUF_ORDER);
-#else
-	page = alloc_pages(GFP_ATOMIC, LBUF_ORDER);
-#endif
-	if (page) {
-		desc->kern_addr = page_address(page);
-		/* lbuf is prepared only if lbuf is invalidated */
-		LBUF_INVALIDATE(desc->kern_addr);
-	}
-	else
-		desc->kern_addr = NULL;
-#else
-	/* NOTE that pci_alloc_consistent returns allocated pages that have
-	 * been zeroed, so taking longer time than normal allocation */
-	desc->kern_addr = pci_alloc_consistent(adapter->pdev, LBUF_SIZE,
+/*
+ * Memory allocation/free functions:
+ */
+static inline void *__alloc_lbuf(struct nf10_adapter *adapter,
+			       struct desc *desc, u32 size)
+{
+	desc->kern_addr = pci_alloc_consistent(adapter->pdev, size,
 					       &desc->dma_addr);
-#endif
-	desc->size = LBUF_SIZE;
-	desc->offset = 0;
-	desc->skb = NULL;
+	desc->size = size;
+	init_tx_pointers(desc);
+	spin_lock_init(&desc->lock);
 
 	return desc->kern_addr;
 }
 
-static inline void free_lbuf(struct nf10_adapter *adapter, struct desc *desc)
+static inline void __free_lbuf(struct nf10_adapter *adapter, struct desc *desc)
 {
-#ifndef CONFIG_LBUF_COHERENT
-	__free_pages(virt_to_page(desc->kern_addr), LBUF_ORDER);
-#else
-	pci_free_consistent(adapter->pdev, LBUF_SIZE,
+	pci_free_consistent(adapter->pdev, desc->size,
 			    desc->kern_addr, desc->dma_addr);
-#endif
-	/* TODO: if skb is not NULL, release it safely */
 }
 
-static void unmap_and_free_lbuf(struct nf10_adapter *adapter,
-				struct desc *desc, int rx)
-{
-	if (unlikely(desc->kern_addr == NULL))
-		return;
-#ifndef CONFIG_LBUF_COHERENT	/* explicitly unmap to/from normal pages */
-	pci_unmap_single(adapter->pdev, desc->dma_addr, LBUF_SIZE,
-			 rx ? PCI_DMA_FROMDEVICE : PCI_DMA_TODEVICE);
-#endif
-	free_lbuf(adapter, desc);
-	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "%s: addr=(kern=%p:dma=%p)\n", __func__,
-		  desc->kern_addr, (void *)desc->dma_addr);
-}
-
-static int alloc_and_map_lbuf(struct nf10_adapter *adapter,
-			      struct desc *desc, int rx)
-{
-	if (alloc_lbuf(adapter, desc) == NULL)
-		return -ENOMEM;
-
-#ifndef CONFIG_LBUF_COHERENT	/* explicitly map to/from normal pages */
-	desc->dma_addr = pci_map_single(adapter->pdev, desc->kern_addr,
-			LBUF_SIZE, rx ? PCI_DMA_FROMDEVICE : PCI_DMA_TODEVICE);
-	if (pci_dma_mapping_error(adapter->pdev, desc->dma_addr)) {
-		netif_err(adapter, probe, default_netdev(adapter),
-			  "failed to map to dma addr (kern_addr=%p)\n",
-			  desc->kern_addr);
-		free_lbuf(adapter, desc);
-		return -EIO;
-	}
-#endif
-	netif_dbg(adapter, drv, default_netdev(adapter), 
-		"%s: addr=(kern=%p:dma=%p)\n", __func__,
-		desc->kern_addr, (void *)desc->dma_addr);
-	return 0;
-}
-
-/* functions for desc */
 static struct desc *alloc_desc(void)
 {
 	return kmem_cache_alloc(desc_cache, GFP_ATOMIC);
 }
 
-static void free_desc(struct desc *desc)
+static void __free_desc(struct desc *desc)
 {
 	kmem_cache_free(desc_cache, desc);
 }
 
-void lbuf_queue_tail(struct lbuf_head *head, struct desc *desc)
+static struct desc *alloc_lbuf(struct nf10_adapter *adapter, unsigned long size)
 {
-	spin_lock(&head->lock);
-	__lbuf_queue_tail(head, desc);
-	spin_unlock(&head->lock);
-}
+	struct desc *desc = alloc_desc();
 
-void lbuf_queue_head(struct lbuf_head *head, struct desc *desc)
-{
-	/* no need of lockless currently */
-	spin_lock(&head->lock);
-	__lbuf_queue_head(head, desc);
-	spin_unlock(&head->lock);
-}
+	if (unlikely(!desc))
+		return NULL;
 
-struct desc *lbuf_dequeue(struct lbuf_head *head)
-{
-	struct desc *desc;
-
-	spin_lock(&head->lock);
-	desc = __lbuf_dequeue(head);
-	spin_unlock(&head->lock);
-
+	if (unlikely(!__alloc_lbuf(adapter, desc, size))) {
+		__free_desc(desc);
+		return NULL;
+	}
+	netif_dbg(adapter, drv, default_netdev(adapter),
+		  "%s: addr=(kern=%p:dma=%p)\n", __func__,
+		  desc->kern_addr, (void *)desc->dma_addr);
 	return desc;
 }
 
-static bool desc_full(int rx)
+static void free_lbuf(struct nf10_adapter *adapter, struct desc *desc)
 {
-	/* use non-null kern_addr as an indicator that distinguishes
-	 * full from empty, so make sure kern_addr sets to NULL when consumed */
-	return prod(rx) == cons(rx) &&
-	       cons_desc(rx)->kern_addr != NULL;
+	if (unlikely(desc == NULL))
+		return;
+
+	netif_dbg(adapter, drv, default_netdev(adapter), 
+		"%s: addr=(kern=%p:dma=%p)\n", __func__,
+		desc->kern_addr, (void *)desc->dma_addr);
+
+	__free_lbuf(adapter, desc);
+	__free_desc(desc);
 }
-#define tx_desc_full()	desc_full(TX)
-#define rx_desc_full()	desc_full(RX)
 
-static bool desc_empty(int rx)
+static void enable_irq(struct nf10_adapter *adapter)
 {
-	return prod(rx) == cons(rx) &&
-	       cons_desc(rx)->kern_addr == NULL;
+	u64 last_rx_dma_addr =
+		(u64)&DWORD_GET(cur_rx_desc()->dma_addr, get_rx_cons());
+	if (get_last_gc_addr())
+		nf10_writeq(adapter, TX_WRITEBACK_REG, get_last_gc_addr());
+	nf10_writeq(adapter, RX_WRITEBACK_REG, last_rx_dma_addr);
+	wmb();
+	nf10_writel(adapter, IRQ_ENABLE_REG, IRQ_CTRL_VAL);
+	netif_dbg(adapter, intr, default_netdev(adapter),
+		  "enable_irq (wb=[tx:%p,rx:%p])\n",
+		  (void *)get_last_gc_addr(), (void *)last_rx_dma_addr);
 }
-#define tx_desc_empty()	desc_empty(TX)
-#define rx_desc_empty()	desc_empty(RX)
 
-static int add_to_pending_gc_list(struct desc *desc)
+static void disable_irq(struct nf10_adapter *adapter)
 {
-	struct desc *pdesc;
+	nf10_writel(adapter, IRQ_DISABLE_REG, IRQ_CTRL_VAL);
+	netif_dbg(adapter, intr, default_netdev(adapter), "disable_irq\n");
+}
 
-	if ((pdesc = alloc_desc()) == NULL) {
-		pr_err("Error: failed to alloc pdesc causing memory leak\n");
+void (*irq_ctrl_handlers[NR_IRQ_CTRL])(struct nf10_adapter *adapter) = {
+	[IRQ_CTRL_ENABLE]	= enable_irq,
+	[IRQ_CTRL_DISABLE]	= disable_irq,
+};
+
+static int init_tx_lbufs(struct nf10_adapter *adapter)
+{
+	int i;
+
+	BUG_ON(tx_kern_desc());
+	if (!(tx_kern_desc() = alloc_lbuf(adapter, LBUF_TX_SIZE)))
 		return -ENOMEM;
-	}
+	netif_info(adapter, probe, default_netdev(adapter),
+		   "TX kern lbuf allocated at kern_addr=%p/dma_addr=%p"
+		   " (size=%u bytes)\n", tx_kern_desc()->kern_addr,
+		   (void *)tx_kern_desc()->dma_addr, tx_kern_desc()->size);
 
-	*pdesc = *desc;	/* copy */
-
-	/* irq must be disabled since tx irq handling can call this function */
-	__lbuf_queue_tail(&pending_gc_head, pdesc);
-
-	return 0;
-}
-
-static void lbuf_gc(struct nf10_adapter *adapter,
-		    struct desc *desc)
-{
-	BUG_ON(!desc);
-
-	/* FIXME: skb-to-desc - currently, assume one skb per desc */
-	if (desc->skb->data != desc->kern_addr)
-		pr_err("Error: skb->data=%p != kern_addr=%p\n", desc->skb->data, desc->kern_addr);
-
-	BUG_ON(!desc->kern_addr);
-
-	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "gctx: addr=%p skb=%p\n", (void *)desc->dma_addr, desc->skb);
-
-	/* FIXME: skb-to-desc - skb->len will be changed */
-	pci_unmap_single(adapter->pdev, desc->dma_addr, desc->skb->len,
-			 PCI_DMA_TODEVICE);
-
-	dev_kfree_skb_any(desc->skb);
-
-	free_desc(desc);
-}
-
-/* should be called with tx_lock held */
-static bool clean_tx_pending_gc(struct nf10_adapter *adapter, u64 last_gc_addr)
-{
-	struct desc *desc, *_desc;
-	bool empty;
-	
-	lbuf_for_each_entry_safe(desc, _desc, &pending_gc_head) {
-		__lbuf_del(desc);
-		lbuf_gc(adapter, desc);
-		if (desc->dma_addr == last_gc_addr) {
-			netif_dbg(adapter, drv, default_netdev(adapter),
-				  "[txdebug] meet gc addr and exit\n");
-			break;
-		}
-	}
-	empty = lbuf_queue_empty(&pending_gc_head);
-
-	return empty;
-}
-
-static void check_tx_completion(void)
-{
-	u32 *completion = tx_completion_kern_addr();
-
-	while (tx_desc_empty() == false &&
-	       completion[tx_cons()] == TX_COMPLETION_OKAY) {
-		struct desc *desc = tx_cons_desc();
-
-		add_to_pending_gc_list(desc);
-
-		/* clean */
-		clean_desc(desc);
-		completion[tx_cons()] = 0;
-		mb();
-
-		/* update cons */
-		inc_tx_cons();
-	}
-}
-
-static void enable_intr(struct nf10_adapter *adapter)
-{
-	/* FIXME: replace 0xcacabeef */
-	nf10_writel(adapter, TX_INTR_CTRL_ADDR, 0xcacabeef);
-}
-
-static int init_tx_completion_buffer(struct nf10_adapter *adapter)
-{
-	tx_completion_kern_addr() =
+	/* tx completion DMA-coherent buffer */
+	lbuf_info.tx_completion_kern_addr =
 		pci_alloc_consistent(adapter->pdev, TX_COMPLETION_SIZE,
-				     &tx_completion_dma_addr());
+				     &lbuf_info.tx_completion_dma_addr);
 
-	if (tx_completion_kern_addr() == NULL)
+	if (lbuf_info.tx_completion_kern_addr == NULL) {
+		free_lbuf(adapter, tx_kern_desc());
 		return -ENOMEM;
+	}
 
-	nf10_writeq(adapter, TX_COMPLETION_ADDR, tx_completion_dma_addr());
+	for (i = 0; i < NR_SLOT; i++)
+		set_tx_avail(i);
 
+	nf10_writeq(adapter, TX_COMPLETION_ADDR,
+		    lbuf_info.tx_completion_dma_addr);
 	return 0;
 }
 
-static void free_tx_completion_buffer(struct nf10_adapter *adapter)
+static unsigned long get_tx_user_lbuf(struct nf10_adapter *adapter,
+				      int ref, unsigned long size)
 {
-	pci_free_consistent(adapter->pdev, TX_COMPLETION_SIZE,
-			    tx_completion_kern_addr(),
-			    tx_completion_dma_addr());
+	struct desc *desc;
+
+	if (unlikely(ref >= NR_TX_USER_LBUF)) {
+		pr_err("%s: ref(=%d) >= %d\n", __func__, ref, NR_TX_USER_LBUF);
+		return 0;
+	}
+
+	desc = tx_user_desc(ref);
+	/* reuse tx buffer if existing lbuf >= requested size */
+	if (!desc || desc->size < size) {
+		free_lbuf(adapter, desc);
+		if ((desc = alloc_lbuf(adapter, size)) == NULL) {
+			pr_err("%s: failed to allocate tx_user_desc[%d]\n",
+			       __func__, ref);
+			return 0;
+		}
+		tx_user_desc(ref) = desc;
+	}
+	set_tx_dma_addr(ref, desc->dma_addr);
+	return virt_to_phys(desc->kern_addr) >> PAGE_SHIFT;
 }
 
-/*
- * this function takes idx as a parameter, which locates a descriptor to be
- * prepared. duplicate preparation is allowed, but it checks if idx equals to
- * rx_prod. if so rx_prod is advanced, otherwise it's kept unchanged 
- */
+static void put_tx_user_lbuf(struct nf10_adapter *adapter, int ref)
+{
+	if (ref >= NR_TX_USER_LBUF || !tx_user_desc(ref))
+		return;
+	free_lbuf(adapter, tx_user_desc(ref));
+	tx_user_desc(ref) = NULL;
+}
+
+static void free_tx_lbufs(struct nf10_adapter *adapter)
+{
+	int i;
+
+	free_lbuf(adapter, tx_kern_desc());
+	pci_free_consistent(adapter->pdev, TX_COMPLETION_SIZE,
+			    lbuf_info.tx_completion_kern_addr,
+			    lbuf_info.tx_completion_dma_addr);
+
+	for (i = 0; i < NR_TX_USER_LBUF; i++)
+		put_tx_user_lbuf(adapter, i);
+}
+
 static void nf10_lbuf_prepare_rx(struct nf10_adapter *adapter, unsigned long idx)
 {
 	void *kern_addr;
@@ -384,43 +312,24 @@ static void nf10_lbuf_prepare_rx(struct nf10_adapter *adapter, unsigned long idx
 	struct desc *desc;
 
 	/* sanity check due to malicious user-driven preparation */
-	if (unlikely(idx >= NR_LBUF)) {
-		pr_err("%s: invalid descriptor index provided\n", __func__);
+	if (unlikely(idx >= NR_SLOT)) {
+		pr_err("%s: invalid desc index(=%lu)\n", __func__, idx);
 		return;
 	}
-
-	desc = get_desc(RX, idx);
-
-	/* when changed from kernel to user packet processing mode:
-	 * this rarely happens */
-	if (unlikely(desc->kern_addr == NULL))
-		alloc_and_map_lbuf(adapter, desc, RX);
+	desc = get_rx_desc(idx);
+	if (unlikely(desc->kern_addr == NULL)) {
+		pr_err("%s: desc->kern_addr is NULL\n", __func__);
+		return;
+	}
 
 	kern_addr = desc->kern_addr;
 	dma_addr = desc->dma_addr;
 
-	/* before sending a new lbuf to NIC, invalidate header space
-	 * by zeroing it so that it can poll the header to identify
-	 * readiness of any recieved packets in the lbuf */
-	LBUF_INVALIDATE(kern_addr);
-
-#ifndef CONFIG_LBUF_COHERENT
-	/* this function can be called from user thread via ioctl,
-	 * so this mapping should be done safely in that case */
-	pci_dma_sync_single_for_device(adapter->pdev, dma_addr,
-				       LBUF_SIZE, PCI_DMA_FROMDEVICE);
-#endif
 	nf10_writeq(adapter, rx_addr_off(idx), dma_addr);
 	nf10_writel(adapter, rx_stat_off(idx), RX_READY);
 
 	netif_dbg(adapter, rx_status, default_netdev(adapter),
 		  "RX lbuf[%lu] is prepared to nf10\n", idx);
-	if (likely((unsigned int)idx == rx_prod()))
-		inc_rx_prod();
-	else	/* may be duplicate preparation by user */
-		netif_warn(adapter, rx_status, default_netdev(adapter),
-			   "prepared idx(=%lu) mismatches rx_prod=%u\n",
-			   idx, rx_prod());
 }
 
 static void nf10_lbuf_prepare_rx_all(struct nf10_adapter *adapter)
@@ -429,164 +338,180 @@ static void nf10_lbuf_prepare_rx_all(struct nf10_adapter *adapter)
 
 	netif_dbg(adapter, drv, default_netdev(adapter),
 		  "init to prepare all rx descriptors\n");
-	for (i = 0; i < NR_LBUF; i++)
+	for (i = 0; i < NR_SLOT; i++)
 		nf10_lbuf_prepare_rx(adapter, i);
+
+	set_rx_cons(NR_RESERVED_DWORDS);
 }
 
-static int __nf10_lbuf_init_buffers(struct nf10_adapter *adapter, int rx)
+static void free_rx_lbufs(struct nf10_adapter *adapter)
 {
 	int i;
-	int err = 0;
 
-	for (i = 0; i < NR_LBUF; i++) {
-		struct desc *desc = get_desc(rx, i);
-		if ((err = alloc_and_map_lbuf(adapter, desc, rx)))
-			break;
+	for (i = 0; i < NR_SLOT; i++) {
+		struct desc *desc = get_rx_desc(i);
+		if (desc) {
+			netif_info(adapter, drv, default_netdev(adapter),
+				   "RX lbuf[%d] is freed from kern_addr=%p",
+				   i, desc->kern_addr);
+			free_lbuf(adapter, desc);
+			set_rx_desc(i, NULL);
+		}
+	}
+}
+
+static int init_rx_lbufs(struct nf10_adapter *adapter)
+{
+	int i;
+
+	for (i = 0; i < NR_SLOT; i++) {
+		/* RX desc is normally allocated once and used permanently
+		 * unlike RX lbuf */
+		struct desc *desc;
+
+		BUG_ON(get_rx_desc(i));	/* ensure unused desc is NULL */
+		desc = alloc_lbuf(adapter, LBUF_RX_SIZE);
+		if (unlikely(!desc))
+			goto alloc_fail;
+		set_rx_desc(i, desc);
+		set_rx_dma_addr(i, desc->dma_addr);
+
 		netif_info(adapter, probe, default_netdev(adapter),
-			   "%s lbuf[%d] allocated at kern_addr=%p/dma_addr=%p"
-			   " (size=%lu bytes)\n", rx ? "RX" : "TX", i,
-			   desc->kern_addr, (void *)desc->dma_addr, LBUF_SIZE);
+			   "RX lbuf[%d] allocated at kern_addr=%p/dma_addr=%p"
+			   " (size=%u bytes)\n", i,
+			   desc->kern_addr, (void *)desc->dma_addr, desc->size);
 	}
-	if (unlikely(err))	/* failed to allocate all lbufs */
-		for (i--; i >= 0; i--)
-			unmap_and_free_lbuf(adapter, get_desc(rx, i), rx);
-	else if (rx) 
-		nf10_lbuf_prepare_rx_all(adapter);
+	nf10_lbuf_prepare_rx_all(adapter);
 
-	return err;
+	return 0;
+
+alloc_fail:
+	free_rx_lbufs(adapter);
+	return -ENOMEM;
 }
 
-static void __nf10_lbuf_free_buffers(struct nf10_adapter *adapter, int rx)
+static ssize_t show_lbuf_stat(struct device *dev,
+			      struct device_attribute *attr, char *buf)
 {
 	int i;
+	struct lbuf_info *info = container_of(attr, struct lbuf_info,
+					      stat_attr);
+	struct lbuf_stats *stats = &info->stats;
+	unsigned long rx_bytes = 0;
 
-	for (i = 0; i < NR_LBUF; i++) {
-		unmap_and_free_lbuf(adapter, get_desc(rx, i), rx);
-		netif_info(adapter, drv, default_netdev(adapter),
-			   "%s lbuf[%d] is freed from kern_addr=%p",
-			   rx ? "RX" : "TX", i, get_desc(rx, i)->kern_addr);
+	sprintf(buf, "tx_lbufs=%llu\ntx_bytes=%llu\ntx_avg_bytes=%llu\n",
+		stats->tx_lbufs, stats->tx_bytes,
+		stats->tx_lbufs ? stats->tx_bytes / stats->tx_lbufs : 0);
+	sprintf(buf + strlen(buf), "tx_stops=%u\n", stats->tx_stops);
+	for (i = 0; i < CONFIG_NR_PORTS; i++)
+		rx_bytes += info->adapter->netdev[i]->stats.rx_bytes;
+	if (rx_bytes > 0) {
+		sprintf(buf + strlen(buf), "rx_cycles_per_KB rx_alloc=%llu"
+			" copy=%llu zero=%llu stack=%llu\n",
+			(ELAPSED_CYCLES(0) << 10) / rx_bytes,
+			(ELAPSED_CYCLES(1) << 10) / rx_bytes,
+			(ELAPSED_CYCLES(2) << 10) / rx_bytes,
+			(ELAPSED_CYCLES(3) << 10) / rx_bytes);
 	}
+
+	return strlen(buf);
 }
 
-static int deliver_packets(struct nf10_adapter *adapter, void *buf_addr,
-			   unsigned int dword_idx, unsigned int nr_dwords)
+static ssize_t init_lbuf_stat(struct device *dev,
+			     struct device_attribute *attr,
+			     const char *buf, size_t count)
 {
-	int port_num;
-	u32 pkt_len;
-	struct net_device *netdev;
-	struct sk_buff *skb;
-	unsigned int rx_packets = 0;
-	DEFINE_TIMESTAMP(3);
+	struct lbuf_info *info = container_of(attr, struct lbuf_info,
+					      stat_attr);
+	memset(&info->stats, 0, sizeof(info->stats));
+	return count;
+}
 
-	do {
-		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
-		pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
+static unsigned long nf10_lbuf_get_pfn(struct nf10_adapter *adapter,
+				       unsigned long size)
+{
+	unsigned int idx = adapter->nr_user_mmap;
+	unsigned long pfn = 0;	/* 0 means error */
 
-		if (unlikely(LBUF_IS_PKT_VALID(port_num, pkt_len) == false)) {	
-			/* for error reporting */
-			netdev = LBUF_IS_PORT_VALID(port_num) ?
-				adapter->netdev[port_num] :
-				default_netdev(adapter);
-			netif_err(adapter, rx_err, netdev,
-				  "Error: invalid packet "
-				  "(port_num=%d, len=%u at rx_cons=%d lbuf[%u])",
-				  rx_cons(), dword_idx, port_num, pkt_len);
-			goto next_pkt;
-		}
-		netdev = adapter->netdev[port_num];
+	if (idx == 0) {		/* metadata page */
+		pfn = virt_to_phys(lbuf_info.u) >> PAGE_SHIFT;
+		netif_info(adapter, drv, default_netdev(adapter),
+			   "%s: [%u] DMA metadata page (pfn=%lx)\n",
+			   __func__, idx, pfn);
+	}
+	else if (idx == 1) {
+		void *addr = lbuf_info.tx_completion_kern_addr;
+		pfn = virt_to_phys(addr) >> PAGE_SHIFT;
+		netif_info(adapter, drv, default_netdev(adapter),
+			   "%s: [%u] DMA tx completion area (pfn=%lx)\n",
+			   __func__, idx, pfn);
+	}
+	else {			/* data pages */
+		idx -= 2;	/* adjust index to data */
+		if (idx < NR_SLOT && size == LBUF_RX_SIZE)	/* rx */
+			pfn = get_rx_desc(idx)->dma_addr >> PAGE_SHIFT;
+		else if (idx >= NR_SLOT)
+			pfn = get_tx_user_lbuf(adapter, idx - NR_SLOT, size);
+			
+		netif_info(adapter, drv, default_netdev(adapter),
+			   "%s: [%u] data page (pfn=%lx size=%lu)\n",
+			   __func__, adapter->nr_user_mmap, pfn, size);
+	}
+	return pfn;
+}
 
-		/* interface is down, skip it */
-		if (netdev_port_up(netdev) == 0)
-			goto next_pkt;
+static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc);
+static int nf10_lbuf_user_xmit(struct nf10_adapter *adapter, unsigned long arg)
+{
+	struct desc *desc;
+	u32 ref = XMIT_REF(arg);
+	u32 len = XMIT_LEN(arg);
+	
+	netif_dbg(adapter, drv, default_netdev(adapter),
+		  "user_xmit: ref=%u len=%u arg=%lx\n", ref, len, arg);
 
-		START_TIMESTAMP(0);
-		if ((skb = netdev_alloc_skb_ip_align(netdev, pkt_len)) == NULL) {
-			netif_err(adapter, rx_err, netdev,
-				  "rx_cons=%d failed to alloc skb", rx_cons());
-			goto next_pkt;
-		}
-		STOP_TIMESTAMP(0);
+	if (unlikely(ref >= NR_TX_USER_LBUF)) {
+		pr_err("%s: Error invalid ref %u >= %d\n",
+		       __func__, ref, NR_TX_USER_LBUF);
+		return -EINVAL;
+	}
+	desc = tx_user_desc(ref);
+	if (unlikely(desc == NULL)) {
+		pr_err("%s: Error tx_user_lbufs[%d] is NULL\n", __func__, ref);
+		return -EINVAL;
+	}
+	/* no need to acquire desc->lock, since it hasn't been submitted
+	 * to kernel */
+	set_tx_prod(desc, 0);
+	set_tx_prod_pvt(desc, len);
+	set_tx_cons(desc, 0);
 
-		START_TIMESTAMP(1);
-		skb_copy_to_linear_data(skb, LBUF_PKT_ADDR(buf_addr, dword_idx), 
-					pkt_len);	/* memcpy */
-		STOP_TIMESTAMP(1);
-
-		skb_put(skb, pkt_len);
-		skb->protocol = eth_type_trans(skb, netdev);
-		skb->ip_summed = CHECKSUM_NONE;
-
-		START_TIMESTAMP(2);
-		napi_gro_receive(&adapter->napi, skb);
-		STOP_TIMESTAMP(2);
-
-		rx_packets++;
-next_pkt:
-		dword_idx = LBUF_NEXT_DWORD_IDX(dword_idx, pkt_len);
-	} while(dword_idx < nr_dwords);
-
-	netdev->stats.rx_packets += rx_packets;
-
-	netif_dbg(adapter, rx_status, netdev,
-		  "RX lbuf delivered to host nr_dwords=%u rx_packets=%u/%lu" 
-		  " alloc=%llu memcpy=%llu skbpass=%llu\n",
-		  nr_dwords, rx_packets, netdev->stats.rx_packets,
-		  ELAPSED_CYCLES(0), ELAPSED_CYCLES(1), ELAPSED_CYCLES(2));
+	lbuf_xmit(adapter, desc);
 
 	return 0;
 }
 
-static void deliver_lbuf(struct nf10_adapter *adapter, struct desc *desc)
-{
-	void *buf_addr = desc->kern_addr;
-	unsigned int nr_dwords = LBUF_NR_DWORDS(buf_addr);
-	unsigned int dword_idx = LBUF_FIRST_DWORD_IDX();
-
-	if (LBUF_IS_VALID(nr_dwords) == false) {
-		netif_err(adapter, rx_err, default_netdev(adapter),
-			  "rx_cons=%d's header contains invalid # of dwords=%u",
-			  rx_cons(), nr_dwords);
-		return;
-	}
-	deliver_packets(adapter, buf_addr, dword_idx, nr_dwords);
-	unmap_and_free_lbuf(adapter, desc, RX);
-}
-
-static u64 nf10_lbuf_user_init(struct nf10_adapter *adapter)
-{
-	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "user request to initialize rx\n");
-
-	adapter->nr_user_mmap = 0;
-
-	nf10_lbuf_prepare_rx_all(adapter);
-
-	/* rx_cons() is just returned for short-term compatibility
-	 * so will be removed or possibly infomration given to user at init */
-	return rx_cons();
-}
-
-static unsigned long nf10_lbuf_get_pfn(struct nf10_adapter *adapter,
-				       unsigned long arg)
-{
-	/* FIXME: currently, test first for rx, fetch pfn from rx first */
-	int rx	= ((int)(arg / NR_LBUF) & 0x1) ^ 0x1;
-	int idx	= (int)(arg % NR_LBUF);
-
-	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "%s: rx=%d, idx=%d, arg=%lu\n", __func__, rx, idx, arg);
-	return get_desc(rx, idx)->dma_addr >> PAGE_SHIFT;
-}
-
 static struct nf10_user_ops lbuf_user_ops = {
-	.init			= nf10_lbuf_user_init,
 	.get_pfn		= nf10_lbuf_get_pfn,
 	.prepare_rx_buffer	= nf10_lbuf_prepare_rx,
+	.start_xmit		= nf10_lbuf_user_xmit,
 };
+
+static int nf10_lbuf_set_irq_period(struct nf10_adapter *adapter)
+{
+	nf10_writel(adapter, IRQ_PERIOD_REG,
+		    adapter->irq_period_usecs * 1000 /* ns */);
+	netif_info(adapter, probe, default_netdev(adapter),
+		   "%u us is set as irq period\n", adapter->irq_period_usecs);
+	return 0;
+}
 
 /* nf10_hw_ops functions */
 static int nf10_lbuf_init(struct nf10_adapter *adapter)
 {
+	int err;
+
+	/* create desc pool */
 	desc_cache = kmem_cache_create("lbuf_desc",
 				       sizeof(struct desc),
 				       __alignof__(struct desc),
@@ -595,272 +520,417 @@ static int nf10_lbuf_init(struct nf10_adapter *adapter)
 		pr_err("failed to alloc desc_cache\n");
 		return -ENOMEM;
 	}
-
-	spin_lock_init(&tx_lock);
-	lbuf_head_init(&pending_gc_head);
-
-	lbuf_hw.adapter = adapter;
+	/* init lbuf user-visiable single-page space in lbuf_hw */
+	if ((lbuf_info.u =
+	     (struct lbuf_user *)get_zeroed_page(GFP_KERNEL)) == NULL) {
+		netif_err(adapter, rx_err, default_netdev(adapter),
+			  "failed to alloc lbuf user page\n");
+		kmem_cache_destroy(desc_cache);
+		return -ENOMEM;
+	}
+	lbuf_info.adapter = adapter;
 	adapter->user_ops = &lbuf_user_ops;
+
+	adapter->irq_period_usecs = DEFAULT_INTR_PERIOD_USECS;
+	nf10_lbuf_set_irq_period(adapter);
+
+	lbuf_info.stat_attr.attr.name = "lbuf_stat";
+	lbuf_info.stat_attr.attr.mode = S_IRUGO | S_IWUSR;
+	lbuf_info.stat_attr.show = show_lbuf_stat;
+	lbuf_info.stat_attr.store = init_lbuf_stat;
+
+	sysfs_attr_init(&lbuf_info.stat_attr.attr);
+
+	err = device_create_file(&adapter->pdev->dev, &lbuf_info.stat_attr);
+	if (err)
+		pr_warn("failed to create file for lbuf_stat\n");
 
 	return 0;
 }
 
 static void nf10_lbuf_free(struct nf10_adapter *adapter)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&tx_lock, flags);
-	/* 0: purge all pending descs: not empty -> bug */
-	BUG_ON(!clean_tx_pending_gc(adapter, 0));
-	spin_unlock_irqrestore(&tx_lock, flags);
-
 	kmem_cache_destroy(desc_cache);
+	device_remove_file(&adapter->pdev->dev, &lbuf_info.stat_attr);
 }
 
 static int nf10_lbuf_init_buffers(struct nf10_adapter *adapter)
 {
 	int err = 0;
 
-	tx_prod() = tx_cons() = rx_prod() = rx_cons() = 0;
-
-	if ((err = init_tx_completion_buffer(adapter)))
+	if ((err = init_tx_lbufs(adapter)))
 		return err;
 
-	if ((err = __nf10_lbuf_init_buffers(adapter, RX)))
-		free_tx_completion_buffer(adapter);
+	if ((err = init_rx_lbufs(adapter)))
+		free_tx_lbufs(adapter);
 
 	return err;
 }
 
 static void nf10_lbuf_free_buffers(struct nf10_adapter *adapter)
 {
-	free_tx_completion_buffer(adapter);
-	__nf10_lbuf_free_buffers(adapter, RX);
+	free_tx_lbufs(adapter);
+	free_rx_lbufs(adapter);
 }
 
 static int nf10_lbuf_napi_budget(void)
 {
-	/* XXX: napi budget as # of large buffers, instead of # of packets.
-	 * set 1 as a minimum budget. It will be changed to packet-based budget
-	 * when per-packet delivery is implemented in DMA */ 
-	return 1;
+	return 64;
 }
 
-static int consume_rx_desc(struct nf10_adapter *adapter, struct desc *desc)
+static void move_to_next_lbuf(struct nf10_adapter *adapter)
 {
-	if (rx_desc_empty())
-		return -1;
+	netif_dbg(adapter, rx_status, default_netdev(adapter),
+		  "%s: rx_idx=%u\n", __func__, rx_idx());
 
-	if (LBUF_IS_VALID(LBUF_NR_DWORDS(rx_cons_desc()->kern_addr)) == false) {
-		netif_dbg(adapter, rx_status, default_netdev(adapter),
-			  "nothing to consume for rx: cons=%u nr_dwords=%u\n",
-			  rx_cons(), LBUF_NR_DWORDS(rx_cons_desc()->kern_addr));
-		return -1;
-	}
+	LBUF_INIT_HEADER(cur_rx_desc()->kern_addr);
+	wmb();
+	nf10_lbuf_prepare_rx(adapter, (unsigned long)rx_idx());
+	inc_rx_idx();
+	set_rx_cons(NR_RESERVED_DWORDS);
+}
 
-	/* copy metadata to allow for further producing rx buffer */
-	*desc = *rx_cons_desc();
+static void deliver_packet(struct net_device *netdev, void *pkt_addr,
+		unsigned int pkt_len, struct sk_buff **pskb, int *work_done)
+{
+	struct nf10_adapter *adapter = netdev_adapter(netdev);
+	struct sk_buff *skb = *pskb;
 
-#ifndef CONFIG_USER_ONLY	/* if user-only, no clean desc */
-	/* XXX: for user to permanently reuse current buffers,
-	 * desc is cleaned only if kernel will process it */
-	if (adapter->nr_user_mmap == 0)
-		clean_desc(rx_cons_desc());
-#endif
-	adapter->user_private = rx_cons();
-	inc_rx_cons();
+	/* interface is down, skip it */
+	if (unlikely(netdev_port_up(netdev) == 0))
+		return;
 
-	return 0;
+	//pr_debug("dps: %p l=%u wd=%d\n", pkt_addr, pkt_len, *work_done);
+
+	START_TIMESTAMP(1);
+	skb_copy_to_linear_data(skb, pkt_addr, pkt_len);
+	STOP_TIMESTAMP(1);
+
+	START_TIMESTAMP(2);
+	memset(pkt_addr - LBUF_TX_METADATA_SIZE, 0,
+	       ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE);
+	STOP_TIMESTAMP(2);
+
+	START_TIMESTAMP(3);
+	skb_put(skb, pkt_len);
+	skb->protocol = eth_type_trans(skb, netdev);
+	skb->ip_summed = CHECKSUM_NONE;
+	napi_gro_receive(&adapter->napi, skb);
+	STOP_TIMESTAMP(3);
+
+	netdev->stats.rx_packets++;
+	netdev->stats.rx_bytes += pkt_len;
+	(*work_done)++;
+	(*pskb) = NULL;
+
+	//pr_debug("dpe\n");
 }
 
 static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter, 
 				     int *work_done, int budget)
 {
-	struct desc desc;
+	void *buf_addr;
+	unsigned int dword_idx, next_dword_idx;
+	struct sk_buff *skb;
+	int port_num;
+	void *pkt_addr;
+	unsigned int pkt_len, next_pkt_len;
+	struct net_device *netdev = NULL;
+	union lbuf_header lh;
+
+	if (nf10_user_callback(adapter, 1)) {
+		*work_done = 0;
+		return;
+	}
 
 	do {
-		if (consume_rx_desc(adapter, &desc))
-			return;		/* nothing to process */
-#ifndef CONFIG_LBUF_COHERENT
-		pci_dma_sync_single_for_cpu(adapter->pdev, desc.dma_addr,
-				LBUF_SIZE, PCI_DMA_FROMDEVICE);
-#endif
-		/* if a user process can handle it, pass it up and return.
-		 * In this case, rx buffer is not newly allocated and sent,
-		 * instead a user app permanently maps and reuse initial buffers */
-		if (nf10_user_rx_callback(adapter)) {
-			(*work_done)++;
-			return;
+		skb = NULL;
+		buf_addr = cur_rx_desc()->kern_addr;
+		dword_idx = get_rx_cons();
+		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
+		pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
+		//pr_debug("i=%u l=%u\n", dword_idx, pkt_len);
+		if (pkt_len == 0) {
+			/* if this lbuf is closed, move to next lbuf */
+			LBUF_GET_HEADER(buf_addr, lh);
+			if (LBUF_CLOSED(dword_idx, lh)) {
+				//pr_err("1-drop: h=0x%016llx 0x%04x %u\n", lh.qword, lh.nr_drops, lh.nr_drops);
+				move_to_next_lbuf(adapter);
+				continue;
+			}
+			break;
 		}
-#ifdef CONFIG_USER_ONLY
-		netif_dbg(adapter, drv, default_netdev(adapter),
-			  "No user task awaiting in user-only mode\n");
-		nf10_lbuf_prepare_rx(adapter, adapter->user_private);
-		return;
-#endif
-
-		/* for now with strong assumption where processing one lbuf at a time
-		 * refill a single rx buffer */
-		if (likely(!rx_desc_full())) {
-			alloc_and_map_lbuf(adapter, rx_prod_desc(), RX);
-			nf10_lbuf_prepare_rx(adapter, (unsigned long)rx_prod());
+		/* bug if packet len is invalid */
+		if (unlikely(!LBUF_IS_PKT_VALID(port_num, pkt_len))) {
+			netdev = LBUF_IS_PORT_VALID(port_num) ?
+				adapter->netdev[port_num] :
+				default_netdev(adapter);
+			netif_err(adapter, rx_err, netdev,
+				  "Error: invalid packet "
+				  "(port_num=%d, len=%u at rx_idx=%d lbuf[%u])",
+				  port_num, pkt_len, rx_idx(), dword_idx);
+			printk("-prev packet --------------------------------\n");
+			print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_NONE, 16, 1,
+				       (u32 *)buf_addr + (dword_idx - 18), 72, true);
+			printk("-this packet --------------------------------\n");
+			print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_NONE, 16, 1,
+				       (u32 *)buf_addr + dword_idx, 72, true);
+			break;
 		}
+		/* Now, pkt_len > 0,
+		 * meaning the current packet starts being received */
+		netdev = adapter->netdev[port_num];
+		if (unlikely(!skb)) { /* skb becomes NULL if delieved */
+			START_TIMESTAMP(0);
+			skb = netdev_alloc_skb_ip_align(netdev, pkt_len);
+			STOP_TIMESTAMP(0);
+			if (unlikely(!skb)) {
+				netif_err(adapter, rx_err, netdev,
+					"failed to alloc skb (l=%u)", pkt_len);
+				break;
+			}
+		}
+		pkt_addr = LBUF_PKT_ADDR(buf_addr, dword_idx);
+		next_dword_idx = LBUF_NEXT_DWORD_IDX(dword_idx, pkt_len);
+wait_to_end_recv:
+		next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
+		//pr_debug("ptc: nl=%u ni=%u\n", next_pkt_len, next_dword_idx);
+		if (next_pkt_len > 0) {
+			/* if entire packet has been received, consume it */
+			deliver_packet(netdev, pkt_addr, pkt_len,
+				       &skb, work_done);
+			set_rx_cons(next_dword_idx);
+		}
+		else {	/* next_pkt_len == 0 */
+			LBUF_GET_HEADER(buf_addr, lh);
+			/* lazy update: rx_dropped is eventually accurate */
+			netdev->stats.rx_dropped = lh.nr_drops;
+			/* still waiting for the packet to be received,
+			 * continue polling on next_pkt_len */
+			if ((lh.nr_qwords << 1) < next_dword_idx - NR_RESERVED_DWORDS)
+				goto wait_to_end_recv;
 
-		deliver_lbuf(adapter, &desc);
-		(*work_done)++;
-	} while (*work_done < budget);
+			/* if nr_dwords >= next_dword_idx,
+			 * the entire packet is received, consume it */
+			deliver_packet(netdev, pkt_addr, pkt_len,
+				       &skb, work_done);
+
+			/* check if the lbuf is closed */
+			if (LBUF_CLOSED(next_dword_idx, lh)) {
+				move_to_next_lbuf(adapter);
+				continue;
+			}
+			/* timeout has occured, but don't know which packet is
+			 * associated with the timeout, so check next_pkt_len
+			 * again to see if it's zero. If so, hw has jumped to
+			 * next 128B-aligned offset */
+			next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
+			if (next_pkt_len == 0)
+				next_dword_idx = LBUF_128B_ALIGN(next_dword_idx);
+			set_rx_cons(next_dword_idx);
+		}
+		/* check if next_dword_idx exceeds lbuf */
+		if (get_rx_cons() >= (cur_rx_desc()->size >> 2))
+			move_to_next_lbuf(adapter);
+	} while(*work_done < budget);
+
+	netif_dbg(adapter, rx_status, default_netdev(adapter),
+		  "loop exit: i=%u n=%d rx=%lu\n", dword_idx, *work_done,
+		  likely(netdev) ? netdev->stats.rx_packets : 0);
 }
 
-static int lbuf_xmit(struct net_device *netdev, void *buf_addr,
-		     unsigned int len, struct sk_buff *skb)
+static int lbuf_xmit(struct nf10_adapter *adapter, struct desc *desc)
 {
-	struct nf10_adapter *adapter = netdev_adapter(netdev);
+	u32 idx;
 	u32 nr_qwords;
-	struct desc *desc = tx_prod_desc();
+	u32 prod, next_prod;
+ 	u32 prod_pvt;
+	dma_addr_t dma_addr;
 
-	if (unlikely(((unsigned long)buf_addr & 0x3)))
-		pr_warn("WARN: buf_addr(%p) is not dword-aligned!\n", buf_addr);
+	/* TODO: 
+	 * sanity check for alignment,
+	 * optimization with test avail? */
+	spin_lock_bh(&desc->lock);
+	idx = tx_idx();
+	prod = get_tx_prod(desc);
+	prod_pvt = get_tx_prod_pvt(desc);
+	if (!get_tx_avail(idx) || prod == prod_pvt) {
+		spin_unlock_bh(&desc->lock);
+		return -EBUSY;
+ 	}
+	next_prod = ALIGN(prod_pvt, 4096);
+	if (unlikely(next_prod == desc->size))
+		next_prod = 0;
+	set_tx_prod(desc, next_prod);
+	set_tx_prod_pvt(desc, next_prod);
+	set_tx_used(idx);
+	inc_tx_idx();
+	lbuf_info.stats.tx_lbufs++;
+	lbuf_info.stats.tx_bytes += (prod_pvt - prod);
+	spin_unlock_bh(&desc->lock);
 
-	nr_qwords = ALIGN(len, 8) >> 3;
+	dma_addr = desc->dma_addr + prod;
+ 	nr_qwords = (prod_pvt - prod) >> 3;
 
-	desc->dma_addr = pci_map_single(adapter->pdev, buf_addr, len,
-					PCI_DMA_TODEVICE);
-	if (pci_dma_mapping_error(adapter->pdev, desc->dma_addr)) {
-		netif_err(adapter, probe, netdev,
-			  "failed to map to dma addr (kern_addr=%p)\n",
-			  desc->kern_addr);
-		return -EIO;
+	if (unlikely(!IS_ALIGNED(dma_addr, 4096))) {
+		pr_err("Error: cannot send 4K-unaligned buffer:%p\n",
+		       (void *)dma_addr);
+		return -EINVAL;
 	}
-	desc->kern_addr = buf_addr;
-	desc->skb = skb;
-
-	netif_dbg(adapter, drv, default_netdev(adapter),
-		 "\trqtx[%u]: desc=%p len=%u, dma_addr/kern_addr/skb=%p/%p/%p,"
-		 "nr_qwords=%u, addr=0x%x, stat=0x%x\n",
-		 tx_prod(), desc, len, (void *)desc->dma_addr, desc->kern_addr, desc->skb,
-		 nr_qwords, tx_addr_off(tx_prod()), tx_stat_off(tx_prod()));
-
 	wmb();
-	nf10_writeq(adapter, tx_addr_off(tx_prod()), desc->dma_addr);
-	nf10_writel(adapter, tx_stat_off(tx_prod()), nr_qwords);
+	nf10_writeq(adapter, tx_addr_off(idx), dma_addr);
+	nf10_writel(adapter, tx_stat_off(idx), nr_qwords);
 
-	inc_tx_prod();
+	netif_dbg(adapter, tx_queued, default_netdev(adapter),
+		  "\trqtx[%u]: c%d l=%u prod=[%u:%u] dma_addr=%p qw=%u\n",
+		  idx, smp_processor_id(), prod_pvt - prod, prod, prod_pvt,
+		  (void *)dma_addr, nr_qwords);
+#if 0
+	print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_NONE,
+		       16, 1, desc->kern_addr + prod, 128, true);
+#endif
+	return 0;
+}
 
-	/* FIXME: currently a single packet in a lbuf */
+static unsigned long __copy_skb_to_lbuf(struct desc *desc, void *buf_addr,
+					int port_num, struct sk_buff *skb)
+{
+	int i;
+	void *p;
+	buf_addr = LBUF_CUR_TX_ADDR(buf_addr, port_num, skb->len);
+	skb_copy_from_linear_data(skb, buf_addr, skb_headlen(skb));
+	p = buf_addr + skb_headlen(skb);
+	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+		memcpy(p, page_address(frag->page.p) + frag->page_offset, frag->size);
+		p += frag->size;
+	}
+	buf_addr = LBUF_NEXT_TX_ADDR(buf_addr, skb->len);
+	return buf_addr - desc->kern_addr;	/* updated prod_pvt */
+}
+
+static int copy_skb_to_lbuf(struct net_device *netdev,
+			    struct sk_buff *skb, struct desc *desc)
+{
+	unsigned int pkt_len = skb->len;
+	u32 prod;
+	u32 prod_pvt;
+	u32 cons;
+	u32 avail_size;
+
+	if (unlikely(pkt_len == 0))
+		return 0;
+
+	spin_lock_bh(&desc->lock);
+	prod = get_tx_prod(desc);
+	prod_pvt = get_tx_prod_pvt(desc);
+	/* check if need to wrap around by examining tail room */
+	if (!LBUF_HAS_TX_ROOM(desc->size, prod_pvt, pkt_len))
+		goto no_buf_space;
+	/* check to safely produce packet by examining cons */
+	cons = get_tx_cons(desc);
+	avail_size = (cons > prod_pvt ? 0 : desc->size) + cons - prod_pvt;
+
+	//pr_debug("%s: prod_pvt=%u cons=%u avail=%u req_size=%u pkt_len=%u\n", __func__,
+	//	 prod_pvt, cons, avail_size, ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE, pkt_len);
+	if (ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE + 4096 > avail_size)
+		goto no_buf_space;
+
+	/* now we have enough room to copy the packet */
+	prod_pvt = __copy_skb_to_lbuf(desc, desc->kern_addr + prod_pvt,
+				      netdev_port_num(netdev), skb);
+	set_tx_prod_pvt(desc, prod_pvt);
+
+	if (unlikely(prod_pvt > cons && prod < cons))
+		pr_err("Error: overwritten (p=%u p'=%u c=%u a=%u)\n",
+		       prod_pvt, prod, cons, avail_size);
 	netdev->stats.tx_packets++;
+	netdev->stats.tx_bytes += pkt_len;
+	spin_unlock_bh(&desc->lock);
 
 	return 0;
+
+no_buf_space:
+	spin_unlock_bh(&desc->lock);
+	return -EBUSY;
 }
 
 static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 					struct net_device *netdev)
 {
 	struct nf10_adapter *adapter = netdev_adapter(netdev);
-	unsigned long flags;
-	unsigned int headroom, headroom_to_expand;
-	int ret;
+	struct desc *desc = tx_kern_desc();
 
-	spin_lock_irqsave(&tx_lock, flags);
-
-	check_tx_completion();
-
-	if (tx_desc_full()) {
-		if (++debug_count >> 20) {	/* XXX: debugging */
-			u32 *completion = tx_completion_kern_addr();
-			/* normally it's not warning, but at the stage of TX DMA debugging,
-			 * it could be a bug, so until any error is completely gone,
-			 * remain the this if body with the following message */
-			pr_warn("FULL [c=%u:p=%u] - desc=%p empty=%d completion=[%x:%x] dma_addr/kern_addr/skb=%p/%p/%p\n",
-				tx_cons(), tx_prod(), tx_cons_desc(), tx_desc_empty(), completion[0], completion[1],
-				(void *)tx_cons_desc()->dma_addr, tx_cons_desc()->kern_addr, tx_cons_desc()->skb);
-
-			print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_NONE,
-					16, 1, tx_cons_desc()->kern_addr, 128, true);
-			debug_count = 0;
-		}
-#if 0	/* TODO */
-		netif_stop_queue(dev);
-#endif
-		spin_unlock_irqrestore(&tx_lock, flags);
+	if (copy_skb_to_lbuf(netdev, skb, desc)) {
+		/* no space available in lbuf */
+		lbuf_info.stats.tx_stops++;
+		netif_stop_queue(netdev);
 		return NETDEV_TX_BUSY;
 	}
-	debug_count = 0;
+	/* now we have copied skb to lbuf */
+	lbuf_xmit(adapter, desc);
+	dev_kfree_skb_any(skb);
 
-	/* TODO: if skb is shared, must allocate separate buf
-	 * so, w/o it, pktgen is not working */
-	if (!skb_shared(skb) &&
-	    ((headroom = skb_headroom(skb)) < 8 ||
-	     !IS_ALIGNED((unsigned long)skb->data, 4))) {
-		headroom_to_expand = headroom < 8 ? 8 - headroom :
-			ALIGN((unsigned long)skb->data, 4) - (unsigned long)skb->data;
-
-		pskb_expand_head(skb, headroom_to_expand, 0, GFP_ATOMIC);
-		netif_dbg(adapter, drv, default_netdev(adapter),
-			 "NOTE: skb is expanded(headroom=%u->%u head=%p data=%p len=%u)",
-			 headroom, skb_headroom(skb), skb->head, skb->data, skb->len);
-	}
-	skb_push(skb, 8);
-	((u32 *)skb->data)[0] = LBUF_ENCODE_PORT_NUM(netdev_port_num(netdev));
-	((u32 *)skb->data)[1] = skb->len - 8;
-
-	ret = lbuf_xmit(netdev, skb->data, skb->len, skb);
-
-	spin_unlock_irqrestore(&tx_lock, flags);
-
-	return ret == 0 ? NETDEV_TX_OK : NETDEV_TX_BUSY;
+	return NETDEV_TX_OK;
 }
 
 static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 {
-	u64 *tx_last_gc_addr_ptr = get_tx_last_gc_addr();
-	dma_addr_t tx_last_gc_addr;
-	int complete;
-	unsigned long flags;
+	dma_addr_t gc_addr;
+	u32 cons;
+	struct desc *desc = tx_kern_desc();
+	int i;
 
-	/* no gc buffer updated */
-	if (*tx_last_gc_addr_ptr == 0)
-		return 1;	/* clean complete */
-
-	netif_dbg(adapter, drv, default_netdev(adapter),
-		"tx-irq: gc_addr=%p\n", (void *)(*tx_last_gc_addr_ptr));
-
-	/* TODO: optimization possible in case where one-by-one tx/completion,
-	 * we can avoid add and delete to-be-cleaned desc to/from gc list */
 again:
-	spin_lock_irqsave(&tx_lock, flags);
+	rmb();
+	gc_addr = get_tx_last_gc_addr();
+	if (gc_addr == get_last_gc_addr())
+		goto out;
 
-	check_tx_completion();
-	tx_last_gc_addr = *tx_last_gc_addr_ptr;
-	complete = clean_tx_pending_gc(adapter, tx_last_gc_addr);
+	if (nf10_user_callback(adapter, 0))
+		return 1;	/* forcing napi to end */
 
-	spin_unlock_irqrestore(&tx_lock, flags);
-
-	if (tx_last_gc_addr != *tx_last_gc_addr_ptr) {
-		netif_dbg(adapter, drv, default_netdev(adapter),
-			  "tx-irq: \ttry to clean again at 1st pass\n");
-		goto again;
+	if (!addr_in_lbuf(tx_kern_desc(), gc_addr)) {
+		/* user is not on, so gc_addr is seen by software */ 
+		set_last_gc_addr(gc_addr);
+		pr_warn("Warn: non-kernel gc_addr (%p) seen in irq\n",
+			(void *)gc_addr);
+		goto out;
 	}
 
-	if (cmpxchg64(tx_last_gc_addr_ptr, tx_last_gc_addr, 0) != tx_last_gc_addr) {
-		netif_dbg(adapter, drv, default_netdev(adapter),
-			  "tx-irq: \ttry to clean again at 2nd pass\n");
+	cons = ALIGN(gc_addr - desc->dma_addr, 4096);
+	if (cons == desc->size)
+		cons = 0;
+	set_tx_cons(desc, cons);
+	smp_wmb();
+
+	lbuf_xmit(adapter, desc);
+
+	/* wake stopped queue */
+	for (i = 0; i < CONFIG_NR_PORTS; i++)
+		if (netif_queue_stopped(adapter->netdev[i]))
+			netif_wake_queue(adapter->netdev[i]);
+
+	netif_dbg(adapter, tx_done, default_netdev(adapter),
+		  "gctx: gc_addr=%p last=%p cons=%u\n", (void *)gc_addr,
+		  (void *)get_last_gc_addr(), get_tx_cons(desc));
+
+	/* store last seen gc address to let hw know it */
+	set_last_gc_addr(gc_addr);
+
+	/* if still not cleaned for tx, try again to see if more gc needed */
+	if (!tx_clean_completed(desc))
 		goto again;
-	}
-
-	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "tx-irq: clean complete=%d\n", complete);
-
-	return complete;
+out:
+	return tx_clean_completed(desc);
 }
 
 static unsigned long nf10_lbuf_ctrl_irq(struct nf10_adapter *adapter,
 					unsigned long cmd)
 {
-	if (cmd == IRQ_CTRL_ENABLE) {
-		netif_dbg(adapter, drv, default_netdev(adapter), "irq enabled\n");
-		enable_intr(adapter);
-	}
-	/* TODO: disable interrupt */
+	if (unlikely(cmd >= NR_IRQ_CTRL))
+		return -EINVAL;
+	irq_ctrl_handlers[cmd](adapter);
 	return 0;
 }
 
@@ -873,7 +943,8 @@ static struct nf10_hw_ops lbuf_hw_ops = {
 	.process_rx_irq		= nf10_lbuf_process_rx_irq,
 	.start_xmit		= nf10_lbuf_start_xmit,
 	.clean_tx_irq		= nf10_lbuf_clean_tx_irq,
-	.ctrl_irq		= nf10_lbuf_ctrl_irq
+	.ctrl_irq		= nf10_lbuf_ctrl_irq,
+	.set_irq_period		= nf10_lbuf_set_irq_period,
 };
 
 void nf10_lbuf_set_hw_ops(struct nf10_adapter *adapter)

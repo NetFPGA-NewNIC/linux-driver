@@ -20,9 +20,6 @@
 *	 time lagging behind the packet arrival rate. The kernel-user interface
 *	 is minimalistic for now.
 *
-*        TODO:
-*		- additional interface for TX
-*
 *	 This code is initially developed for the Network-as-a-Service (NaaS) project.
 *	 (under development in https://github.com/NetFPGA-NewNIC/linux-driver)
 *        
@@ -51,6 +48,7 @@
 #include "nf10.h"
 #include "nf10_user.h"
 #include <linux/sched.h>
+#include <linux/poll.h>
 
 /* AXI host completion buffer size: 1st 8B for read and 2nd 8B for write */
 #define AXI_COMPLETION_SIZE		16
@@ -97,13 +95,17 @@ static int nf10_mmap(struct file *f, struct vm_area_struct *vma)
 			  vma->vm_start, vma->vm_end);
 		return -EINVAL;
 	}
+	if (!adapter->user_ops->get_pfn)
+		return -EINVAL;
 
 	size = vma->vm_end - vma->vm_start;
-	/* TODO: some arg/bound checking: 
-	 * size must be the same as kernel buffer */
 
-	pfn = adapter->user_ops->get_pfn(adapter, adapter->nr_user_mmap);
-
+	if ((pfn = adapter->user_ops->get_pfn(adapter, size)) == 0) {
+		netif_err(adapter, drv, default_netdev(adapter),
+			  "failed to get pfn (nr_user_mmap=%u)\n",
+			  adapter->nr_user_mmap);
+		return -EINVAL;
+	}
 	err = remap_pfn_range(vma, vma->vm_start, pfn, size, vma->vm_page_prot);
 
 	netif_dbg(adapter, drv, default_netdev(adapter),
@@ -114,6 +116,37 @@ static int nf10_mmap(struct file *f, struct vm_area_struct *vma)
 		adapter->nr_user_mmap++;
 
 	return err;
+}
+
+static unsigned int nf10_poll(struct file *f, poll_table *wait)
+{
+	struct nf10_adapter *adapter = f->private_data;
+	unsigned int mask = 0;
+
+	/* if irq is disabled, enable again before waiting */
+	if (adapter->user_flags & UF_IRQ_DISABLED &&
+	    !(adapter->user_flags & (UF_TX_PENDING | UF_RX_PENDING))) {
+		netif_dbg(adapter, intr, default_netdev(adapter),
+			  "enable irq before poll_wait w/o pending events\n");
+		adapter->user_flags &= ~UF_IRQ_DISABLED;
+		nf10_enable_irq(adapter);
+	}
+	poll_wait(f, &adapter->user_rx_wq, wait);
+	poll_wait(f, &adapter->user_tx_wq, wait);
+
+	/* UF_[RX|TX]_PENDING is set by nf10_user_callback, which is
+	 * called in napi thread. So, irq has been already disabled */
+	if (adapter->user_flags & UF_RX_PENDING) {
+		adapter->user_flags &= ~UF_RX_PENDING;
+		mask |= (POLLIN | POLLRDNORM);
+	}
+	if (adapter->user_flags & UF_TX_PENDING) {
+		adapter->user_flags &= ~UF_TX_PENDING;
+		mask |= (POLLOUT | POLLWRNORM);
+	}
+	netif_dbg(adapter, intr, default_netdev(adapter),
+		  "nf10_poll mask=%x\n", mask);
+	return mask;
 }
 
 #define AXI_LOOP_THRESHOLD	100000000
@@ -177,6 +210,7 @@ static int check_axi(int ret)
 
 static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
+	int ret = 0;
 	struct nf10_adapter *adapter = (struct nf10_adapter *)f->private_data;
 
 	switch(cmd) {
@@ -206,7 +240,7 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	{
 		u64 addr, val;
 		u32 ret;
-		if (copy_from_user(&addr, (u64 *)arg, 8)) {
+		if (copy_from_user(&addr, (void __user *)arg, 8)) {
 			pr_err("Error: failed to copy AXI read addr\n");
 			return -EFAULT;
 		}
@@ -216,7 +250,7 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		if (ret)
 			return ret;	/* error */
 		val |= (addr << 32);	/* for compatability with older rdaxi */
-		if (copy_to_user((u64 *)arg, &val, 8)) {
+		if (copy_to_user((void __user *)arg, &val, 8)) {
 			pr_err("Error: failed to copy AXI read val\n");
 			return -EFAULT;
 		}
@@ -224,37 +258,58 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	}
 	case NF10_IOCTL_CMD_INIT:
 	{
-		u64 ret;
-		ret = adapter->user_ops->init(adapter);
-		if (copy_to_user((void __user *)arg, &ret, sizeof(u64)))
-			return -EFAULT;
+		unsigned long ret = 0;
+
+		adapter->nr_user_mmap = 0;
+		adapter->user_flags |= UF_IRQ_DISABLED;
+		adapter->user_flags |= UF_USER_ON;
+
+		nf10_disable_irq(adapter);
+		if (adapter->user_ops->init) {
+			ret = adapter->user_ops->init(adapter, arg);
+			if (copy_to_user((void __user *)arg, &ret, sizeof(u64)))
+				return -EFAULT;
+		}
+		netif_dbg(adapter, drv, default_netdev(adapter),
+			  "user init: flags=%x ret=%lu\n",
+			  adapter->user_flags, ret);
+		break;
+	}
+	case NF10_IOCTL_CMD_EXIT:
+	{
+		unsigned long ret = 0;
+
+		adapter->nr_user_mmap = 0;
+		adapter->user_flags &= ~UF_IRQ_DISABLED;
+		adapter->user_flags &= ~UF_USER_ON;
+
+		if (adapter->user_ops->exit) {
+			ret = adapter->user_ops->exit(adapter, arg);
+			if (copy_to_user((void __user *)arg, &ret, sizeof(u64)))
+				return -EFAULT;
+		}
+		nf10_enable_irq(adapter);
+		netif_dbg(adapter, drv, default_netdev(adapter),
+			  "user exit: flags=%x ret=%lu\n",
+			  adapter->user_flags, ret);
 		break;
 	}
 	case NF10_IOCTL_CMD_PREPARE_RX:
+		if (!adapter->user_ops->prepare_rx_buffer)
+			return -EINVAL;
 		netif_dbg(adapter, drv, default_netdev(adapter),
 			  "user-driven lbuf preparation: i=%lu\n", arg);
 		adapter->user_ops->prepare_rx_buffer(adapter, arg);
 		break;
-	case NF10_IOCTL_CMD_WAIT_INTR:
+	case NF10_IOCTL_CMD_XMIT:
 	{
-		u64 ret;
-
-		DEFINE_WAIT(wait);
-		prepare_to_wait(&adapter->wq_user_intr, &wait,
-				TASK_INTERRUPTIBLE);
-		io_schedule();
-		finish_wait(&adapter->wq_user_intr, &wait);
-		ret = adapter->user_private;
-		if (copy_to_user((void __user *)arg, &ret, sizeof(u64)))
-			return -EFAULT;
-		if (signal_pending(current))
-			pr_debug("signal wakes up a user process\n");
+		ret = adapter->user_ops->start_xmit(adapter, arg);
 		break;
 	}
 	default:
 		return -EINVAL;
 	}
-	return 0;
+	return ret;
 }
 
 static int nf10_release(struct inode *n, struct file *f)
@@ -267,6 +322,7 @@ static struct file_operations nf10_fops = {
 	.owner = THIS_MODULE,
 	.open = nf10_open,
 	.mmap = nf10_mmap,
+	.poll = nf10_poll,
 	.unlocked_ioctl = nf10_ioctl,
 	.release = nf10_release
 };
@@ -331,23 +387,17 @@ int nf10_remove_fops(struct nf10_adapter *adapter)
 	return 0;
 }
 
-bool nf10_user_rx_callback(struct nf10_adapter *adapter)
+bool nf10_user_callback(struct nf10_adapter *adapter, int rx)
 {
+	wait_queue_head_t *q = rx ? &adapter->user_rx_wq : &adapter->user_tx_wq;
+	u32 flag = rx ? UF_RX_PENDING : UF_TX_PENDING;
 	/* if direct user access mode is enabled, just wake up
 	 * a waiting user thread */
-	if (adapter->nr_user_mmap > 0) { 
-		if (likely(waitqueue_active(&adapter->wq_user_intr))) {
-			wmb();	/* adapter->user_private */
-
-			netif_dbg(adapter, drv, default_netdev(adapter),
-				  "waking up user process (user_private=%lu)\n",
-				  adapter->user_private);
-			wake_up(&adapter->wq_user_intr);
-		}
-		else
-			netif_dbg(adapter, drv, default_netdev(adapter),
-				  "mmaped (=%u) but no waiting task (user_private=%lu)\n",
-				  adapter->nr_user_mmap, adapter->user_private);
+	if (adapter->user_flags & UF_USER_ON) { 
+		adapter->user_flags |= flag | UF_IRQ_DISABLED;
+		netif_dbg(adapter, intr, default_netdev(adapter),
+			  "wake up a task for %s\n", rx ? "rx" : "tx");
+		wake_up(q);
 		return true;
 	}
 	return false;

@@ -15,7 +15,6 @@
 #	 This is the makefile for building nf10.ko.
 #	 - CONFIG_PROFILE=y enables measurement codes for profiling. lbuf uses
 #	 it to measure the time taken for skb alloc/memcpy/protocol processing.
-#	 - CONFIG_LBUF_COHERENT=y uses DMA-coherent data buffer.
 #
 #	 This code is initially developed for the Network-as-a-Service (NaaS) project.
 #        
@@ -41,7 +40,9 @@
 #
 #
 
-KERNEL_DIR ?= /lib/modules/$(shell uname -r)/build
+KERNEL_VER	?= $(shell uname -r)
+KERNEL_DIR	?= /lib/modules/$(KERNEL_VER)/build
+INSTALL_DIR	?= /lib/modules/$(KERNEL_VER)/extra/nf10/
 
 obj-m += nf10.o
 nf10-objs += nf10_main.o
@@ -61,7 +62,6 @@ endif
 
 ifeq ($(OSNT),y)
 ccflags-y += -DCONFIG_OSNT
-CONFIG_USER_ONLY := y
 endif
 
 ifeq ($(CONFIG_PHY_INIT),y)
@@ -70,16 +70,36 @@ ccflags-y += -DCONFIG_PHY_INIT
 endif
 
 ccflags-$(CONFIG_PROFILE) += -DCONFIG_PROFILE
-ccflags-$(CONFIG_LBUF_COHERENT) += -DCONFIG_LBUF_COHERENT
 ccflags-$(CONFIG_NO_TIMESTAMP) += -DCONFIG_NO_TIMESTAMP
-ccflags-$(CONFIG_USER_ONLY) += -DCONFIG_USER_ONLY
 ifeq ($(CONFIG_NR_PORTS),)
 	CONFIG_NR_PORTS := 4
 endif
 ccflags-y += -DCONFIG_NR_PORTS=$(CONFIG_NR_PORTS)
 
-all:
+all: modules lib
+
+.PHONY: modules
+modules:
 	make -C $(KERNEL_DIR) M=$(PWD) modules
 
+.PHONY: lib
+lib:
+	make -C lib all
+
+.PHONY: modules_install
+modules_install: modules
+	install -o root -g root -m 0755 -d $(INSTALL_DIR)
+	install -o root -g root -m 0755 nf10.ko $(INSTALL_DIR)
+	depmod -a $(KERNEL_VER)
+
+.PHONY: lib_install
+lib_install: lib
+	make -C lib install
+
+.PHONY: install
+install: modules_install lib_install
+
+.PHONY: clean
 clean:
 	make -C $(KERNEL_DIR) M=$(PWD) clean
+	make -C lib clean

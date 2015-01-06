@@ -50,134 +50,75 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
-#include <sys/mman.h>
 #include <sys/ioctl.h>
-#include <fcntl.h>
-#include <stdint.h>
-#include <signal.h>
 #include <sys/time.h>
 
-#include "nf10_lbuf_api.h"
-#include "nf10_user.h"
+#include <lbufnet.h>
 
-#define DEV_FNAME	"/dev/" NF10_DRV_NAME
-#define debug(format, arg...)	\
-	do { printf(NF10_DRV_NAME ":" format, ##arg); } while(0)
-
-int fd;
 unsigned long total_rx_packets, total_rx_bytes;
 struct timeval start_tv, end_tv;
 
-void finish(int sig)
+void show_stat(struct lbufnet_stat *s)
 {
-	uint64_t dummy;
 	struct timeval elapsed_tv;
 	double elapsed_sec;
 
 	timersub(&end_tv, &start_tv, &elapsed_tv);
 	elapsed_sec = elapsed_tv.tv_sec + ((double)elapsed_tv.tv_usec / 1000000);
 
-	printf("\nReceived packets = %lu (total=%luB avg=%luB)\n",
-		total_rx_packets, total_rx_bytes, total_rx_packets ? total_rx_bytes / total_rx_packets : 0);
+	printf("\nReceived packets = %lu (total=%luB avg=%luB drops=%u polls=%lu)\n",
+		total_rx_packets, total_rx_bytes,
+		total_rx_packets ? total_rx_bytes / total_rx_packets : 0,
+		s->nr_drops, s->nr_polls);
 	printf("Elapsed time = %.6lf sec\n", elapsed_sec);
 	if (elapsed_sec > 0)
-		printf("Throughput = %.2lf pps (%.2lf Mb/sec)\n",
-			total_rx_packets / elapsed_sec, (total_rx_bytes * 8 / 1000000) / elapsed_sec);
+		printf("Throughput = %.2lf pps (%.6lf Gbps raw=%.6lf Gbps)\n",
+			total_rx_packets / elapsed_sec,
+			(total_rx_bytes * 8 * 1e-9) / elapsed_sec,
+			/* add 24B = 20B framing(12B IFG + 8B Preemble) + 4B CRC */
+			((total_rx_bytes + (24 * total_rx_packets)) * 8) * 1e-9 / elapsed_sec);
+}
 
-	ioctl(fd, NF10_IOCTL_CMD_INIT, &dummy);
-	exit(0);
+int input_handler(void *data, unsigned int len)
+{
+	(void)data;
+	if (total_rx_packets == 0)
+		gettimeofday(&start_tv, NULL);
+	else
+		gettimeofday(&end_tv, NULL);
+	total_rx_packets++;
+	total_rx_bytes += len;
+	return 1;
 }
 
 int main(int argc, char *argv[])
 {
-	uint64_t ret;
-	int32_t rx_cons = -1;
-	int i;
-	void *buf[NR_LBUF];
-	uint32_t *buf_addr;
-	uint32_t nr_dwords;
-	int dword_idx, max_dword_idx;
-	int port_num;
-	uint32_t pkt_len;
-	uint32_t rx_packets;
+	int sync_flag = SF_BLOCK;
+	int opt;
+	struct lbufnet_conf conf = {
+		.tx_lbuf_size = 0,	/* don't use tx by this app */
+		.pci_direct_access = 0,	/* use ioctl by default */
+	};
 
-	if ((fd = open(DEV_FNAME, O_RDWR, 0755)) < 0) {
-		perror("open");
-		return -1;
-	}
-
-	if (ioctl(fd, NF10_IOCTL_CMD_INIT, &ret)) {
-		perror("ioctl init");
-		return -1;
-	}
-
-	debug("initialized for direct user access\n");
-
-	for (i = 0; i < NR_LBUF; i++) {
-		/* PROT_READ for rx only */
-		buf[i] = mmap(NULL, LBUF_SIZE, PROT_READ, MAP_PRIVATE, fd, 0);
-		if (buf[i] == MAP_FAILED) {
-			perror("mmap");
-			return -1;
+	while ((opt = getopt(argc, argv, "f:p")) != -1) {
+		switch(opt) {
+		case 'f':
+			sync_flag = atoi(optarg);
+			break;
+		case 'p':
+			conf.pci_direct_access = 1;
+			break;
 		}
-		debug("lbuf[%d] is mmaped to vaddr=%p w/ size=%lu\n",
-		      i, buf[i], LBUF_SIZE);
 	}
-
-	signal(SIGINT, finish);
-	printf("Press Ctrl+C to finish and see # of rx packets\n");
-	do {
-
-		/* wait interrupt: blocked */
-		ioctl(fd, NF10_IOCTL_CMD_WAIT_INTR, &ret);
-		if (rx_cons == -1)
-			rx_cons = (int32_t)ret;
-lbuf_poll_loop:
-		rx_packets = 0;
-
-		buf_addr = buf[rx_cons];
-		nr_dwords = LBUF_NR_DWORDS(buf_addr);
-		dword_idx = LBUF_FIRST_DWORD_IDX();
-
-		/* if lbuf is invalid, usually normal case at the end of the
-		 * lbuf loop, BUT note that it could be caused by a DMA bug */
-		if (!LBUF_IS_VALID(nr_dwords))
-			continue;
-
-		/* packet processing loop */
-		do {
-			port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
-			pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
-			/* if you want to get timestamp of a packet,
-			 * use LBUF_TIMESTAMP(buf_addr, dword_idx) */
-
-			if (LBUF_IS_PKT_VALID(port_num, pkt_len)) {
-				if (total_rx_packets == 0 && rx_packets == 0)
-					gettimeofday(&start_tv, NULL);
-				rx_packets++;
-				total_rx_bytes += pkt_len;
-			}
-			else
-				fprintf(stderr, "Error: rx_cons=%d lbuf contains invalid pkt len=%u\n",
-					rx_cons, pkt_len);
-			dword_idx = LBUF_NEXT_DWORD_IDX(dword_idx, pkt_len);
-		} while(dword_idx < nr_dwords);
-
-		gettimeofday(&end_tv, NULL);
-
-		/* send this lbuf back to the board, and proceed the pointer */
-		ioctl(fd, NF10_IOCTL_CMD_PREPARE_RX, rx_cons);
-
-		total_rx_packets += rx_packets;
-#if 0
-		debug("C [rx_cons=%d] nr_dwords=%u rx_packets=%u/%lu\n",
-				rx_cons, nr_dwords, rx_packets, total_rx_packets);
-#endif
-
-		inc_pointer(rx_cons);
-		goto lbuf_poll_loop;
-	} while(1);
+	if (lbufnet_init(&conf)) {
+		fprintf(stderr, "Error: failed to initialize lbufnet\n");
+		return -1;
+	}
+	lbufnet_register_input_callback(input_handler);
+	lbufnet_register_exit_callback(show_stat);
+	lbufnet_input(LBUFNET_INPUT_FOREVER, sync_flag);
 
 	return 0;
 }
