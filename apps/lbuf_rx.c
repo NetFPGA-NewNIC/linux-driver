@@ -55,8 +55,6 @@
 #include <sys/ioctl.h>
 #include <sys/time.h>
 
-#include "nf10_lbuf_api.h"
-#include "nf10_user.h"
 #include "lbufnet.h"
 
 unsigned long total_rx_packets, total_rx_bytes;
