@@ -39,7 +39,6 @@
 
 #include <stdio.h>
 #include <unistd.h>
-#include <sys/ioctl.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
