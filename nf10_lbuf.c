@@ -209,8 +209,8 @@ static void enable_irq(struct nf10_adapter *adapter)
 	u64 last_rx_dma_addr =
 		(u64)&DWORD_GET(cur_rx_desc()->dma_addr, get_rx_cons());
 	if (get_last_gc_addr())
-		nf10_writeq(adapter, TX_WRITEBACK_REG, get_last_gc_addr());
-	nf10_writeq(adapter, RX_WRITEBACK_REG, last_rx_dma_addr);
+		nf10_writeq(adapter, TX_SYNC_REG, get_last_gc_addr());
+	nf10_writeq(adapter, RX_SYNC_REG, last_rx_dma_addr);
 	wmb();
 	nf10_writel(adapter, IRQ_ENABLE_REG, IRQ_CTRL_VAL);
 	netif_dbg(adapter, intr, default_netdev(adapter),

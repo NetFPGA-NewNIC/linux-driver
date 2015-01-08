@@ -196,8 +196,8 @@ union lbuf_header {
 #define IRQ_DISABLE_REG		0x24
 #define IRQ_PERIOD_REG		0x28
 #define IRQ_CTRL_VAL		0xcacabeef
-#define TX_WRITEBACK_REG	0xB8
-#define RX_WRITEBACK_REG	0x78
+#define TX_SYNC_REG		0xB8
+#define RX_SYNC_REG		0x78
 
 #define rx_addr_off(i)	(RX_LBUF_ADDR_BASE + (i << 3))
 #define rx_stat_off(i)	(RX_LBUF_STAT_BASE + (i << 2))
