@@ -1,4 +1,4 @@
-PROGRAMS	:= lbuf_tx lbuf_rx lbuf_ping
+PROGRAMS	:= lbuf_tx lbuf_rx lbuf_ping lbuf_gen
 INSTALLDIR	:= /usr/local/bin
 LDFLAGS		:= -L../lib -llbufnet
 
@@ -18,6 +18,8 @@ lbuf_rx: lbuf_rx.c
 	$(CC) $(CFLAGS) -o $@ lbuf_rx.c $(LDFLAGS)
 lbuf_ping: lbuf_ping.c
 	$(CC) $(CFLAGS) -o $@ lbuf_ping.c $(LDFLAGS) -lrt
+lbuf_gen: lbuf_gen.c
+	$(CC) $(CFLAGS) -o $@ lbuf_gen.c $(LDFLAGS)
 
 install:
 	install -m 0755 $(PROGRAMS) $(INSTALLDIR)
