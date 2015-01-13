@@ -69,6 +69,7 @@ static struct lbuf_info {
 	struct desc *tx_kern_desc;
 	struct desc *tx_user_desc[NR_TX_USER_LBUF];
 	struct lbuf_user *u;
+	unsigned long long last_gc_addr;
 
 	/* tx completion buffer */
 	void *tx_completion_kern_addr;
@@ -115,8 +116,8 @@ static struct lbuf_info {
 #define set_tx_dma_addr(i, v)	do { lbuf_info.u->tx_dma_addr[i] = v; } while(0)
 #define set_rx_dma_addr(i, v)	do { lbuf_info.u->rx_dma_addr[i] = v; } while(0)
 
-#define get_last_gc_addr()	(lbuf_info.u->last_gc_addr)
-#define set_last_gc_addr(v)	do { lbuf_info.u->last_gc_addr = (unsigned long)v; } while(0)
+#define get_last_gc_addr()	(lbuf_info.last_gc_addr)
+#define set_last_gc_addr(v)	do { lbuf_info.last_gc_addr = (unsigned long)v; } while(0)
 
 #define get_tx_last_gc_addr()	LBUF_GC_ADDR(lbuf_info.tx_completion_kern_addr)
 
@@ -638,11 +639,6 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 	struct net_device *netdev = NULL;
 	union lbuf_header lh;
 
-	if (nf10_user_callback(adapter, 1)) {
-		*work_done = 0;
-		return;
-	}
-
 	do {
 		skb = NULL;
 		buf_addr = cur_rx_desc()->kern_addr;
@@ -679,6 +675,10 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 		}
 		/* Now, pkt_len > 0,
 		 * meaning the current packet starts being received */
+		if (nf10_user_callback(adapter, 1)) {
+			*work_done = 0;
+			return;
+		}
 		netdev = adapter->netdev[port_num];
 		if (unlikely(!skb)) { /* skb becomes NULL if delieved */
 			START_TIMESTAMP(0);
@@ -887,12 +887,14 @@ again:
 	if (gc_addr == get_last_gc_addr())
 		goto out;
 
+	/* store last seen gc address to let hw know it */
+	set_last_gc_addr(gc_addr);
+
 	if (nf10_user_callback(adapter, 0))
 		return 1;	/* forcing napi to end */
 
 	if (!addr_in_lbuf(tx_kern_desc(), gc_addr)) {
 		/* user is not on, so gc_addr is seen by software */ 
-		set_last_gc_addr(gc_addr);
 		pr_warn("Warn: non-kernel gc_addr (%p) seen in irq\n",
 			(void *)gc_addr);
 		goto out;
@@ -914,9 +916,6 @@ again:
 	netif_dbg(adapter, tx_done, default_netdev(adapter),
 		  "gctx: gc_addr=%p last=%p cons=%u\n", (void *)gc_addr,
 		  (void *)get_last_gc_addr(), get_tx_cons(desc));
-
-	/* store last seen gc address to let hw know it */
-	set_last_gc_addr(gc_addr);
 
 	/* if still not cleaned for tx, try again to see if more gc needed */
 	if (!tx_clean_completed(desc))

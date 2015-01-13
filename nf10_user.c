@@ -123,29 +123,33 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 	struct nf10_adapter *adapter = f->private_data;
 	unsigned int mask = 0;
 
-	/* if irq is disabled, enable again before waiting */
-	if (adapter->user_flags & UF_IRQ_DISABLED &&
-	    !(adapter->user_flags & (UF_TX_PENDING | UF_RX_PENDING))) {
+	/* UF_[RX|TX]_PENDING is set by nf10_user_callback, which is
+	 * called in napi thread. So, irq has been already disabled */
+	if (wait->_key & (POLLIN | POLLRDNORM)) {
+		poll_wait(f, &adapter->user_rx_wq, wait);
+		if (adapter->user_flags & UF_RX_PENDING) {
+			adapter->user_flags &= ~UF_RX_PENDING;
+			mask |= (POLLIN | POLLRDNORM);
+		}
+	}
+	if (wait->_key & (POLLOUT | POLLWRNORM)) {
+		poll_wait(f, &adapter->user_tx_wq, wait);
+		if (adapter->user_flags & UF_TX_PENDING) {
+			adapter->user_flags &= ~UF_TX_PENDING;
+			mask |= (POLLOUT | POLLWRNORM);
+		}
+	}
+	/* mask == 0 means it will be blocked waiting for events,
+	 * so if irq is disabled, enable again before waiting */
+	if (!mask && (adapter->user_flags & UF_IRQ_DISABLED)) {
 		netif_dbg(adapter, intr, default_netdev(adapter),
 			  "enable irq before poll_wait w/o pending events\n");
 		adapter->user_flags &= ~UF_IRQ_DISABLED;
 		nf10_enable_irq(adapter);
 	}
-	poll_wait(f, &adapter->user_rx_wq, wait);
-	poll_wait(f, &adapter->user_tx_wq, wait);
-
-	/* UF_[RX|TX]_PENDING is set by nf10_user_callback, which is
-	 * called in napi thread. So, irq has been already disabled */
-	if (adapter->user_flags & UF_RX_PENDING) {
-		adapter->user_flags &= ~UF_RX_PENDING;
-		mask |= (POLLIN | POLLRDNORM);
-	}
-	if (adapter->user_flags & UF_TX_PENDING) {
-		adapter->user_flags &= ~UF_TX_PENDING;
-		mask |= (POLLOUT | POLLWRNORM);
-	}
 	netif_dbg(adapter, intr, default_netdev(adapter),
-		  "nf10_poll key=%lx mask=%x\n", wait ? wait->_key : -1, mask);
+		  "nf10_poll key=%lx mask=%x flags=%x\n",
+		  wait ? wait->_key : -1, mask, adapter->user_flags);
 	return mask;
 }
 

@@ -323,7 +323,7 @@ int lbufnet_input(unsigned long nr_packets, int sync_flags)
 	int port_num;
 	uint32_t pkt_len, next_pkt_len;
 	void *pkt_addr;
-	struct pollfd pfd = { .fd = fd, .events = POLLIN | POLLOUT };
+	struct pollfd pfd = { .fd = fd, .events = POLLIN };
 	int n;
 	unsigned long rx_packets = 0;
 
@@ -344,8 +344,6 @@ wait_rx:
 		do {
 			n = poll(&pfd, 1, 1000);
 			dprintf("Waiting for RX packets (n=%d, revents=%x)\n", n, pfd.revents);
-			if (pfd.revents & POLLOUT)
-				clean_tx();
 		} while (n <= 0 || pfd.revents & POLLERR || !(pfd.revents & POLLIN));
 	}
 	dprintf("Start receiving packets (rx_packets=%lu)\n", rx_packets);
