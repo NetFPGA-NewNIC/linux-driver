@@ -145,7 +145,7 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 		mask |= (POLLOUT | POLLWRNORM);
 	}
 	netif_dbg(adapter, intr, default_netdev(adapter),
-		  "nf10_poll mask=%x\n", mask);
+		  "nf10_poll key=%lx mask=%x\n", wait ? wait->_key : -1, mask);
 	return mask;
 }
 
