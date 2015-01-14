@@ -890,11 +890,11 @@ again:
 	/* store last seen gc address to let hw know it */
 	set_last_gc_addr(gc_addr);
 
-	if (nf10_user_callback(adapter, 0))
-		return 1;	/* forcing napi to end */
-
 	if (!addr_in_lbuf(tx_kern_desc(), gc_addr)) {
-		/* user is not on, so gc_addr is seen by software */ 
+		if (nf10_user_callback(adapter, 0))
+			return 1;	/* forcing napi to end */
+
+		/* user is not on, it may be the one for previous tx by user */
 		pr_warn("Warn: non-kernel gc_addr (%p) seen in irq\n",
 			(void *)gc_addr);
 		goto out;

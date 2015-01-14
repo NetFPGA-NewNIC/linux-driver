@@ -68,10 +68,20 @@
 #define XMIT_MASK			((1 << XMIT_SHIFT) - 1)
 #define NF10_IOCTL_ARG_XMIT(ref, len)	((ref << XMIT_SHIFT) | (len & XMIT_MASK))
 
+/* user_flags (for user and kernel) */
+#define UF_RX_ON	0x01
+#define UF_TX_ON	0x02
+#define UF_ON_MASK	(UF_RX_ON | UF_TX_ON)
+
 #ifdef __KERNEL__
 #include "nf10.h"
 #define XMIT_LEN(arg)			(arg & XMIT_MASK)
 #define XMIT_REF(arg)			(arg >> XMIT_SHIFT)
+
+/* user_flags (for kernel only) */
+#define UF_RX_PENDING	0x04
+#define UF_TX_PENDING	0x08
+#define UF_IRQ_DISABLED	0x10
 
 extern int nf10_init_fops(struct nf10_adapter *adapter);
 extern int nf10_remove_fops(struct nf10_adapter *adapter);

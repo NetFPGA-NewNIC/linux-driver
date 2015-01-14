@@ -68,6 +68,7 @@
 static dev_t devno;
 static struct class *dev_class;
 static struct mutex axi_mutex;
+DEFINE_SPINLOCK(user_lock);
 
 static int nf10_open(struct inode *n, struct file *f)
 {
@@ -123,6 +124,7 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 	struct nf10_adapter *adapter = f->private_data;
 	unsigned int mask = 0;
 
+	spin_lock_bh(&user_lock);
 	/* UF_[RX|TX]_PENDING is set by nf10_user_callback, which is
 	 * called in napi thread. So, irq has been already disabled */
 	if (wait->_key & (POLLIN | POLLRDNORM)) {
@@ -143,13 +145,17 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 	 * so if irq is disabled, enable again before waiting */
 	if (!mask && (adapter->user_flags & UF_IRQ_DISABLED)) {
 		netif_dbg(adapter, intr, default_netdev(adapter),
-			  "enable irq before poll_wait w/o pending events\n");
+			  "enable irq before sleeping (key=%lx)\n",
+			  wait ? wait->_key : -1);
 		adapter->user_flags &= ~UF_IRQ_DISABLED;
 		nf10_enable_irq(adapter);
 	}
+	spin_unlock_bh(&user_lock);
+
 	netif_dbg(adapter, intr, default_netdev(adapter),
 		  "nf10_poll key=%lx mask=%x flags=%x\n",
 		  wait ? wait->_key : -1, mask, adapter->user_flags);
+	//pr_debug("k=%lx m=%x f=%x\n", wait->_key, mask, adapter->user_flags);
 	return mask;
 }
 
@@ -266,7 +272,7 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
 		adapter->nr_user_mmap = 0;
 		adapter->user_flags |= UF_IRQ_DISABLED;
-		adapter->user_flags |= UF_USER_ON;
+		adapter->user_flags |= (arg & UF_ON_MASK);
 
 		nf10_disable_irq(adapter);
 		if (adapter->user_ops->init) {
@@ -285,7 +291,7 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
 		adapter->nr_user_mmap = 0;
 		adapter->user_flags &= ~UF_IRQ_DISABLED;
-		adapter->user_flags &= ~UF_USER_ON;
+		adapter->user_flags &= ~UF_ON_MASK;
 
 		if (adapter->user_ops->exit) {
 			ret = adapter->user_ops->exit(adapter, arg);
@@ -393,16 +399,37 @@ int nf10_remove_fops(struct nf10_adapter *adapter)
 
 bool nf10_user_callback(struct nf10_adapter *adapter, int rx)
 {
-	wait_queue_head_t *q = rx ? &adapter->user_rx_wq : &adapter->user_tx_wq;
-	u32 flag = rx ? UF_RX_PENDING : UF_TX_PENDING;
-	/* if direct user access mode is enabled, just wake up
-	 * a waiting user thread */
-	if (adapter->user_flags & UF_USER_ON) { 
-		adapter->user_flags |= flag | UF_IRQ_DISABLED;
-		netif_dbg(adapter, intr, default_netdev(adapter),
-			  "wake up a task for %s\n", rx ? "rx" : "tx");
-		wake_up(q);
-		return true;
+	u32 user_flags;
+	wait_queue_head_t *this_q, *other_q;
+	u64 poll_flags;
+
+	/* check if user process is initialized for rx or tx */
+	if ((rx  && !(adapter->user_flags & UF_RX_ON)) ||
+	    (!rx && !(adapter->user_flags & UF_TX_ON)))
+		return false;
+
+	/* now we have user process that wants rx or tx */
+	if (rx) {
+		user_flags = UF_RX_PENDING;
+		this_q  = &adapter->user_rx_wq;
+		other_q = &adapter->user_tx_wq;
+		poll_flags = POLLIN | POLLRDNORM | POLLRDBAND;
 	}
-	return false;
+	else {	/* tx */
+		user_flags = UF_TX_PENDING;
+		this_q  = &adapter->user_tx_wq;
+		other_q = &adapter->user_rx_wq;
+		poll_flags = POLLOUT | POLLWRNORM | POLLWRBAND;
+	}
+	netif_dbg(adapter, drv, default_netdev(adapter),
+		  "try to wake up user process for %s\n", rx ? "RX" : "TX");
+
+	spin_lock_bh(&user_lock);
+	adapter->user_flags |= user_flags;
+	if (!waitqueue_active(other_q))
+		adapter->user_flags |= UF_IRQ_DISABLED;
+	wake_up_interruptible_poll(this_q, poll_flags);
+	spin_unlock_bh(&user_lock);
+
+	return true;
 }

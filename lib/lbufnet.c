@@ -164,16 +164,24 @@ static void lbufnet_finish(int sig)
 int lbufnet_init(struct lbufnet_conf *conf)
 {
 	int i;
+	unsigned long flags = conf->flags & UF_ON_MASK;
 
 	if ((fd = open(DEV_FNAME, O_RDWR, 0755)) < 0) {
 		perror("open");
 		return -1;
 	}
-	if (ioctl(fd, NF10_IOCTL_CMD_INIT)) {
+
+	if (flags == 0) {	/* any flag of tx or rx should be on */
+		fprintf(stderr, "Error: invalid flags=%lx\n", flags);
+		return -1;
+	}
+
+	if (ioctl(fd, NF10_IOCTL_CMD_INIT, flags)) {
 		perror("ioctl init");
 		return -1;
 	}
-	dprintf("initialized for direct user access\n");
+	dprintf("initialized for direct user access for%s%s\n",
+		flags & UF_TX_ON ? " TX" : "", flags & UF_RX_ON ? " RX" : "");
 
 	ld = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (ld == MAP_FAILED) {
@@ -200,6 +208,7 @@ int lbufnet_init(struct lbufnet_conf *conf)
 	for (i = 0; i < NR_SLOT; i++)
 		dprintf("\tcompletion[%d]=%x\n", i, LBUF_TX_COMPLETION(tx_completion, i));
 	dprintf("\tgc_addr=%p\n", (void *)LBUF_GC_ADDR(tx_completion));
+	ld->last_gc_addr = (uint64_t)LBUF_GC_ADDR(tx_completion);
 
 	for (i = 0; i < NR_SLOT; i++) {
 		rx_lbuf[i] = mmap(NULL, LBUF_RX_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);

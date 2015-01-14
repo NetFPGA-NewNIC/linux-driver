@@ -97,6 +97,7 @@ int main(int argc, char *argv[])
 	int sync_flag = SF_BLOCK;
 	int opt;
 	struct lbufnet_conf conf = {
+		.flags = RX_ON,
 		.tx_lbuf_size = 0,	/* don't use tx by this app */
 		.pci_direct_access = 0,	/* use ioctl by default */
 	};

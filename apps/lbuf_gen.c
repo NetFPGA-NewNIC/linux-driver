@@ -69,7 +69,7 @@ void show_stat(struct lbufnet_stat *s)
 int main(int argc, char *argv[])
 {
 	int opt;
-	struct lbufnet_conf conf = { .pci_direct_access = 0 };
+	struct lbufnet_conf conf = { .flags = TX_ON, .pci_direct_access = 0 };
 	void *pkt_data;
 
 	while ((opt = getopt(argc, argv, "n:l:b:B:f:p")) != -1) {

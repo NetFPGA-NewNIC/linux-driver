@@ -147,7 +147,7 @@ int main(int argc, char *argv[])
 	uint32_t i;
 	unsigned int batched_size;
 	int opt;
-	struct lbufnet_conf conf = { .pci_direct_access = 0 };
+	struct lbufnet_conf conf = { .flags = TX_ON, .pci_direct_access = 0 };
 	struct packet_info pinfo = {
 		.src_ip = "11.0.0.1",
 		.dst_ip = "12.0.0.1",

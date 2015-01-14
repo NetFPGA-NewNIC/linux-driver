@@ -51,12 +51,6 @@
 #define NF10_VENDOR_ID	0x10ee
 #define NF10_DEVICE_ID	0x4245
 
-/* user_flags */
-#define UF_USER_ON	0x01
-#define UF_IRQ_DISABLED	0x02
-#define UF_RX_PENDING	0x04
-#define UF_TX_PENDING	0x08
-
 struct nf10_adapter {
 	struct napi_struct napi;
 	struct net_device *netdev[CONFIG_NR_PORTS];

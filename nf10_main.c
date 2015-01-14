@@ -152,7 +152,7 @@ static netdev_tx_t nf10_start_xmit(struct sk_buff *skb,
 {
 	struct nf10_adapter *adapter = netdev_adapter(netdev);
 
-	if (adapter->user_flags & UF_USER_ON) {
+	if (unlikely(adapter->user_flags & UF_TX_ON)) {
 		netdev->stats.tx_dropped++;
 		return NETDEV_TX_OK;
 	}

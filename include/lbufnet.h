@@ -37,7 +37,11 @@
 *
 */
 
+#define RX_ON	0x1
+#define TX_ON	0x2
+
 struct lbufnet_conf {
+	unsigned long flags;
 	unsigned int tx_lbuf_size;
 	int pci_direct_access;
 };
