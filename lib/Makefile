@@ -41,7 +41,7 @@ lbufnet.o: $(DRIVER_HEADERS)
 $(LBUFNET_LIB): $(DRIVER_HEADERS) $(LBUFNET_OBJ)
 	$(CC) $(CFLAGS) -shared -o $@ $(LBUFNET_OBJ)
 
-install:
+install: $(LBUFNET_LIB)
 	install -m 0644 $(LBUFNET_LIB) $(LIBDIR)/$(LBUFNET_LIB).$(LBUFNET_LIB_VER)
 	ln -f -s $(LIBDIR)/$(LBUFNET_LIB).$(LBUFNET_LIB_VER) $(LIBDIR)/$(LBUFNET_LIB)
 	ldconfig
