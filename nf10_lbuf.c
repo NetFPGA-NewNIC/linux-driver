@@ -297,6 +297,7 @@ static void free_tx_lbufs(struct nf10_adapter *adapter)
 	int i;
 
 	free_lbuf(adapter, tx_kern_desc());
+	tx_kern_desc() = NULL;
 	pci_free_consistent(adapter->pdev, TX_COMPLETION_SIZE,
 			    lbuf_info.tx_completion_kern_addr,
 			    lbuf_info.tx_completion_dma_addr);
