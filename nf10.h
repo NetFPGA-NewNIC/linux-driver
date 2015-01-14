@@ -41,6 +41,7 @@
 #ifndef _NF10_H
 #define _NF10_H
 
+#include <linux/version.h>
 #include <linux/netdevice.h>
 #include <linux/types.h>
 #include <linux/ethtool.h>

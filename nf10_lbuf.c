@@ -802,7 +802,11 @@ static unsigned long __copy_skb_to_lbuf(struct desc *desc, void *buf_addr,
 	p = buf_addr + skb_headlen(skb);
 	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
 		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
-		memcpy(p, page_address(frag->page.p) + frag->page_offset, frag->size);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,0)
+		memcpy(p, skb_frag_address(frag), skb_frag_size(frag));
+#else
+		memcpy(p, page_address(frag->page) + frag->page_offset, frag->size);
+#endif
 		p += frag->size;
 	}
 	buf_addr = LBUF_NEXT_TX_ADDR(buf_addr, skb->len);
