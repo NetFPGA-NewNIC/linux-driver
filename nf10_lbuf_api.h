@@ -60,11 +60,8 @@
 #define PAGE_SHIFT	12
 #define PAGE_SIZE	(1 << PAGE_SHIFT)
 #endif
-#define ORDER_TO_SIZE(order)	(1UL << (PAGE_SHIFT + order))
 #define LBUF_RX_ORDER	9	/* default 2MB */
-#define LBUF_RX_SIZE	ORDER_TO_SIZE(LBUF_RX_ORDER)
-#define LBUF_TX_ORDER	10	/* default 4MB */
-#define LBUF_TX_SIZE	ORDER_TO_SIZE(LBUF_TX_ORDER)
+#define LBUF_RX_SIZE	(1UL << (PAGE_SHIFT + LBUF_RX_ORDER))
 
 #define LBUF_NR_PORTS	4	/* only used for sanity check: should be the same as # of physical ports */
 
