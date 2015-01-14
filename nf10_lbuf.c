@@ -204,7 +204,7 @@ static void free_lbuf(struct nf10_adapter *adapter, struct desc *desc)
 	__free_desc(desc);
 }
 
-static void enable_irq(struct nf10_adapter *adapter)
+static void __enable_irq(struct nf10_adapter *adapter)
 {
 	u64 last_rx_dma_addr =
 		(u64)&DWORD_GET(cur_rx_desc()->dma_addr, get_rx_cons());
@@ -218,15 +218,15 @@ static void enable_irq(struct nf10_adapter *adapter)
 		  (void *)get_last_gc_addr(), (void *)last_rx_dma_addr);
 }
 
-static void disable_irq(struct nf10_adapter *adapter)
+static void __disable_irq(struct nf10_adapter *adapter)
 {
 	nf10_writel(adapter, IRQ_DISABLE_REG, IRQ_CTRL_VAL);
 	netif_dbg(adapter, intr, default_netdev(adapter), "disable_irq\n");
 }
 
 void (*irq_ctrl_handlers[NR_IRQ_CTRL])(struct nf10_adapter *adapter) = {
-	[IRQ_CTRL_ENABLE]	= enable_irq,
-	[IRQ_CTRL_DISABLE]	= disable_irq,
+	[IRQ_CTRL_ENABLE]	= __enable_irq,
+	[IRQ_CTRL_DISABLE]	= __disable_irq,
 };
 
 static int init_tx_lbufs(struct nf10_adapter *adapter)
