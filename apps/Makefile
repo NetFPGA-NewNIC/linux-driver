@@ -21,7 +21,7 @@ lbuf_ping: lbuf_ping.c
 lbuf_gen: lbuf_gen.c
 	$(CC) $(CFLAGS) -o $@ lbuf_gen.c $(LDFLAGS)
 
-install:
+install: $(PROGRAMS)
 	install -m 0755 $(PROGRAMS) $(INSTALLDIR)
 
 clean:
