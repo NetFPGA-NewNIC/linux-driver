@@ -80,6 +80,7 @@ static struct lbuf_info {
 } lbuf_info;
 
 #define DEFAULT_INTR_PERIOD_USECS	0
+#define TX_CLEAN_BUDGET			64
 
 /* 
  * helper macros for prod/cons pointers and descriptors
@@ -885,12 +886,15 @@ static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 	u32 cons;
 	struct desc *desc = tx_kern_desc();
 	int i;
+	u32 nr_cleaned = 0;
 
 again:
 	rmb();
 	gc_addr = get_tx_last_gc_addr();
-	if (gc_addr == get_last_gc_addr())
+	if (gc_addr == get_last_gc_addr() || nr_cleaned > TX_CLEAN_BUDGET)
 		goto out;
+
+	nr_cleaned++;
 
 	/* store last seen gc address to let hw know it */
 	set_last_gc_addr(gc_addr);
