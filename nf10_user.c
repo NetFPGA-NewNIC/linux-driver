@@ -119,6 +119,11 @@ static int nf10_mmap(struct file *f, struct vm_area_struct *vma)
 	return err;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,4,0)
+#define pt_key	_key
+#else
+#define pt_key	key
+#endif
 static unsigned int nf10_poll(struct file *f, poll_table *wait)
 {
 	struct nf10_adapter *adapter = f->private_data;
@@ -127,14 +132,14 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 	spin_lock_bh(&user_lock);
 	/* UF_[RX|TX]_PENDING is set by nf10_user_callback, which is
 	 * called in napi thread. So, irq has been already disabled */
-	if (wait->_key & (POLLIN | POLLRDNORM)) {
+	if (wait->pt_key & (POLLIN | POLLRDNORM)) {
 		poll_wait(f, &adapter->user_rx_wq, wait);
 		if (adapter->user_flags & UF_RX_PENDING) {
 			adapter->user_flags &= ~UF_RX_PENDING;
 			mask |= (POLLIN | POLLRDNORM);
 		}
 	}
-	if (wait->_key & (POLLOUT | POLLWRNORM)) {
+	if (wait->pt_key & (POLLOUT | POLLWRNORM)) {
 		poll_wait(f, &adapter->user_tx_wq, wait);
 		if (adapter->user_flags & UF_TX_PENDING) {
 			adapter->user_flags &= ~UF_TX_PENDING;
@@ -146,7 +151,7 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 	if (!mask && (adapter->user_flags & UF_IRQ_DISABLED)) {
 		netif_dbg(adapter, intr, default_netdev(adapter),
 			  "enable irq before sleeping (key=%lx)\n",
-			  wait ? wait->_key : -1);
+			  wait ? wait->pt_key : -1);
 		adapter->user_flags &= ~UF_IRQ_DISABLED;
 		nf10_enable_irq(adapter);
 	}
@@ -154,8 +159,8 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 
 	netif_dbg(adapter, intr, default_netdev(adapter),
 		  "nf10_poll key=%lx mask=%x flags=%x\n",
-		  wait ? wait->_key : -1, mask, adapter->user_flags);
-	//pr_debug("k=%lx m=%x f=%x\n", wait->_key, mask, adapter->user_flags);
+		  wait ? wait->pt_key : -1, mask, adapter->user_flags);
+	//pr_debug("k=%lx m=%x f=%x\n", wait->pt_key, mask, adapter->user_flags);
 	return mask;
 }
 
