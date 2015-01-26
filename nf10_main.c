@@ -351,7 +351,11 @@ static int nf10_create_netdev(struct pci_dev *pdev,
 		ndev_priv->adapter = adapter;
 		ndev_priv->port_num = i;
 		ndev_priv->port_up = 0;
-		netdev->features |= NETIF_F_SG;	/* to enable gso, fake SG */
+		/* to enable GSO, fake SG:
+		 * in old kernel versions, GSO doesn't rely on SG 
+		 * instead, GRO relies on RX checksum offload
+		 *	    SG relies on checksum offload. */
+		netdev->features |= NETIF_F_SG | NETIF_F_GSO | NETIF_F_GRO;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39)
 		netdev->hw_features = netdev->features;
 #endif
