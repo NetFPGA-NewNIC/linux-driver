@@ -79,7 +79,7 @@ static struct lbuf_info {
 	struct device_attribute stat_attr;
 } lbuf_info;
 
-#define DEFAULT_INTR_PERIOD_USECS	0
+#define DEFAULT_INTR_PERIOD_USECS	30
 #define TX_CLEAN_BUDGET			64
 
 /* 
