@@ -69,7 +69,7 @@ struct packet_info {
 	uint32_t buflen;
 	uint32_t batchlen;
 	uint64_t count;
-	uint32_t sync_flag;
+	uint32_t sync_flags;
 	struct packet pkt_data;
 };
 
@@ -147,6 +147,9 @@ int main(int argc, char *argv[])
 	uint32_t i;
 	unsigned int batched_size;
 	int opt;
+	unsigned int nr_ports = 1;
+	unsigned int port_num = 0;
+	struct lbufnet_tx_packet pkt;
 	DEFINE_LBUFNET_CONF(conf);
 	struct packet_info pinfo = {
 		.src_ip = "11.0.0.1",
@@ -157,10 +160,10 @@ int main(int argc, char *argv[])
 		.buflen = 128 << 10,	/* 128KB */
 		.batchlen = 128 << 10,	/* 128KB */
 		.count = 1,
-		.sync_flag = SF_BLOCK,
+		.sync_flags = SF_BLOCK,
 	};
 
-	while ((opt = getopt(argc, argv, "s:d:S:D:n:l:b:B:f:p")) != -1) {
+	while ((opt = getopt(argc, argv, "s:d:S:D:n:l:b:B:f:pP:")) != -1) {
 		switch(opt) {
 		case 's':
 			pinfo.src_ip = optarg;
@@ -187,10 +190,13 @@ int main(int argc, char *argv[])
 			pinfo.batchlen = atoi(optarg);
 			break;
 		case 'f':
-			pinfo.sync_flag = atoi(optarg);
+			pinfo.sync_flags = atoi(optarg);
 			break;
 		case 'p':
 			conf.pci_direct_access = 1;
+			break;
+		case 'P':
+			nr_ports = atoi(optarg);
 			break;
 		}
 	}
@@ -205,12 +211,16 @@ int main(int argc, char *argv[])
 	}
 	init_packet(&pinfo);
 
+	pkt.data = &pinfo.pkt_data;
+	pkt.len = pinfo.len;
+	pkt.sync_flags = pinfo.sync_flags;
 	for (i = 0; i < pinfo.count; i++) {
-		batched_size = lbufnet_write(&pinfo.pkt_data, pinfo.len, pinfo.sync_flag);
+		pkt.port_num = (port_num++) % nr_ports; 
+		batched_size = lbufnet_write(&pkt);
 		if (batched_size >= pinfo.batchlen)
-			lbufnet_flush(pinfo.sync_flag);
+			lbufnet_flush(pkt.sync_flags);
 	}
-	lbufnet_flush(pinfo.sync_flag);
+	lbufnet_flush(pkt.sync_flags);
 	printf("%d packets sent\n", i);
 	lbufnet_exit();
 

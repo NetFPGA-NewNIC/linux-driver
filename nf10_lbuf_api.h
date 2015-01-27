@@ -132,7 +132,7 @@ struct lbuf_user {
 
 /* check functions */
 #define LBUF_IS_VALID(nr_dwords)		(nr_dwords > NR_RESERVED_DWORDS && nr_dwords <= (LBUF_SIZE >> 2))
-#define LBUF_IS_PORT_VALID(port_num)		(port_num >=0 && port_num < LBUF_NR_PORTS)
+#define LBUF_IS_PORT_VALID(port_num)		(port_num < LBUF_NR_PORTS)
 #define LBUF_IS_PKT_VALID(port_num, pkt_len)	(LBUF_IS_PORT_VALID(port_num) && pkt_len >= 60 && pkt_len <= 1514)
 
 #if defined(CONFIG_NR_PORTS) && (CONFIG_NR_PORTS == 1)
@@ -159,7 +159,7 @@ static inline unsigned int LBUF_ENCODE_PORT_NUM(int port_num)
 	/* encode */
 	static unsigned int port_map[] = {0x02, 0x08, 0x20, 0x80};
 	if (!LBUF_IS_PORT_VALID(port_num))
-		return 0;
+		return 0x02;	/* if invalid, port 0 by default */
 	return port_map[port_num];
 }
 

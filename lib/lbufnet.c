@@ -324,10 +324,10 @@ static inline void move_to_next_lbuf(void *buf_addr)
 	ld->rx_cons = NR_RESERVED_DWORDS;
 }
 
-static inline void deliver_packet(void *pkt_addr, uint32_t pkt_len, uint64_t *rx_packets)
+static inline void deliver_packet(struct lbufnet_rx_packet *pkt, uint64_t *rx_packets)
 {
-	*rx_packets += input_cb(pkt_addr, pkt_len);
-	memset(pkt_addr - LBUF_TX_METADATA_SIZE, 0, ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE);
+	*rx_packets += input_cb(pkt);
+	memset(pkt->data - LBUF_TX_METADATA_SIZE, 0, ALIGN(pkt->len, 8) + LBUF_TX_METADATA_SIZE);
 }
 
 static void clean_tx(void)
@@ -346,17 +346,15 @@ static void clean_tx(void)
 	ld->last_gc_addr = gc_addr;
 }
 
-/* TODO: multi-port support */
 int lbufnet_input(unsigned long nr_packets, int sync_flags)
 {
 	void *buf_addr;
 	unsigned int dword_idx, next_dword_idx;
-	int port_num;
-	uint32_t pkt_len, next_pkt_len;
-	void *pkt_addr;
+	uint32_t next_pkt_len;
 	struct pollfd pfd = { .fd = fd, .events = POLLIN };
 	int n;
 	unsigned long rx_packets = 0;
+	struct lbufnet_rx_packet pkt;
 
 	/* rx sanity check */
 	if (unlikely(!initialized)) {
@@ -386,10 +384,11 @@ wait_rx:
 	do {
 		dword_idx = ld->rx_cons;
 		buf_addr = rx_lbuf[ld->rx_idx];
-		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
-		pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
+		pkt.port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
+		pkt.len = LBUF_PKT_LEN(buf_addr, dword_idx);
+		pkt.timestamp = LBUF_TIMESTAMP(buf_addr, dword_idx);
 
-		if (unlikely(pkt_len == 0)) {
+		if (unlikely(pkt.len == 0)) {
 			/* if this lbuf is closed, move to next lbuf */
 			LBUF_GET_HEADER(buf_addr, lh);
 			if (LBUF_CLOSED(dword_idx, lh)) {
@@ -400,17 +399,17 @@ wait_rx:
 				return 0;
 			goto wait_rx;
 		}
-		if (unlikely(!LBUF_IS_PKT_VALID(port_num, pkt_len))) {
+		if (unlikely(!LBUF_IS_PKT_VALID(pkt.port_num, pkt.len))) {
 			eprintf("Error: rx_idx=%d lbuf contains invalid pkt len=%u\n",
-				ld->rx_idx, pkt_len);
+				ld->rx_idx, pkt.len);
 			break;
 		}
-		next_dword_idx = LBUF_NEXT_DWORD_IDX(dword_idx, pkt_len);
-		pkt_addr = LBUF_PKT_ADDR(buf_addr, dword_idx);
+		next_dword_idx = LBUF_NEXT_DWORD_IDX(dword_idx, pkt.len);
+		pkt.data = LBUF_PKT_ADDR(buf_addr, dword_idx);
 wait_to_end_recv:
 		next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
 		if (next_pkt_len > 0) {
-			deliver_packet(pkt_addr, pkt_len, &rx_packets);
+			deliver_packet(&pkt, &rx_packets);
 			ld->rx_cons = next_dword_idx;
 		}
 		else {
@@ -419,7 +418,7 @@ wait_to_end_recv:
 				lbufnet_stat.nr_polls++;
 				goto wait_to_end_recv;
 			}
-			deliver_packet(pkt_addr, pkt_len, &rx_packets);
+			deliver_packet(&pkt, &rx_packets);
 			if (unlikely(LBUF_CLOSED(next_dword_idx, lh))) {
 				move_to_next_lbuf(buf_addr);
 				continue;
@@ -491,8 +490,12 @@ int lbufnet_flush(int sync_flags)
 	return out_bytes;
 }
 
-int lbufnet_write(void *data, unsigned int len, int sync_flags)
+int lbufnet_write(struct lbufnet_tx_packet *pkt)
 {
+	void *data = pkt->data;
+	unsigned int len = pkt->len;
+	unsigned int port_num = pkt->port_num;
+	int sync_flags = pkt->sync_flags;
 	void *buf_addr;
 	struct pollfd pfd = { .fd = fd, .events = POLLOUT };
 	int n;
@@ -522,17 +525,17 @@ avail_check:
 	}
 	/* now tx lbuf avaialable */
 	buf_addr = tx_lbuf[tx_prod] + tx_offset;
-	buf_addr = LBUF_CUR_TX_ADDR(buf_addr, 0, len);
+	buf_addr = LBUF_CUR_TX_ADDR(buf_addr, port_num, len);
 	memcpy(buf_addr, data, len);
 	tx_offset = LBUF_NEXT_TX_ADDR(buf_addr, len) - tx_lbuf[tx_prod];
 
 	return tx_offset;
 }
 
-int lbufnet_output(void *data, unsigned len, int sync_flags)
+int lbufnet_output(struct lbufnet_tx_packet *pkt)
 {
 	int ret;
-	if ((ret = lbufnet_write(data, len, sync_flags)) > 0)
-		return lbufnet_flush(sync_flags);
+	if ((ret = lbufnet_write(pkt)) > 0)
+		return lbufnet_flush(pkt->sync_flags);
 	return ret;
 }
