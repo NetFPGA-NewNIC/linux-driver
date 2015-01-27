@@ -78,8 +78,8 @@ static int initialized;
 static unsigned int prev_nr_drops;
 static union lbuf_header lh;
 static unsigned int tx_lbuf_size;
-static int ref_prod;
-static int ref_cons;
+static int tx_prod;
+static int tx_cons;
 static uint32_t tx_offset;
 static uint8_t tx_avail[NR_TX_USER_LBUF];
 static lbufnet_input_cb input_cb;
@@ -103,7 +103,7 @@ static inline uint64_t rdtsc(void)
 
 static inline void xmit_packet_ioctl(void)
 {
-	ioctl(fd, NF10_IOCTL_CMD_XMIT, NF10_IOCTL_ARG_XMIT(ref_prod, tx_offset));
+	ioctl(fd, NF10_IOCTL_CMD_XMIT, NF10_IOCTL_ARG_XMIT(tx_prod, tx_offset));
 }
 
 static inline void xmit_packet_pci(void)
@@ -112,7 +112,7 @@ static inline void xmit_packet_pci(void)
 	LBUF_TX_COMPLETION(tx_completion, idx) = TX_USED;
 	inc_idx(ld->tx_idx);
 	/* XXX: need __sync_synchronize() here? */
-	*((uint64_t *)(pci_base_addr + tx_addr_off(idx))) = ld->tx_dma_addr[ref_prod];
+	*((uint64_t *)(pci_base_addr + tx_addr_off(idx))) = ld->tx_dma_addr[tx_prod];
 	*((uint32_t *)(pci_base_addr + tx_stat_off(idx))) = tx_offset >> 3;
 }
 
@@ -314,13 +314,13 @@ static void clean_tx(void)
 	if (gc_addr == ld->last_gc_addr)
 		return;
 	do {
-		last = gc_addr > ld->tx_dma_addr[ref_cons] &&
-		       gc_addr <= ld->tx_dma_addr[ref_cons] + tx_lbuf_size;
-		tx_avail[ref_cons] = 1;
-		dprintf("%s: ref_cons=%d ref_prod=%d by gc_addr %p (last=%d)\n",
-		      __func__, ref_cons, ref_prod, (void *)gc_addr, last);
-		inc_txbuf_ref(ref_cons);
-	} while (!last && ref_cons != ref_prod);
+		last = gc_addr > ld->tx_dma_addr[tx_cons] &&
+		       gc_addr <= ld->tx_dma_addr[tx_cons] + tx_lbuf_size;
+		tx_avail[tx_cons] = 1;
+		dprintf("%s: tx_cons=%d tx_prod=%d by gc_addr %p (last=%d)\n",
+		      __func__, tx_cons, tx_prod, (void *)gc_addr, last);
+		inc_txbuf_ref(tx_cons);
+	} while (!last && tx_cons != tx_prod);
 	ld->last_gc_addr = gc_addr;
 }
 
@@ -440,12 +440,12 @@ int lbufnet_flush(int sync_flags)
 		} while (n <= 0 || pfd.revents & POLLERR);
 		clean_tx();
 	}
-	tx_avail[ref_prod] = 0;
+	tx_avail[tx_prod] = 0;
 
 	xmit_packet();
 
-	dprintf("%s: ref_prod=%d ref_cons=%d tx_offset=%u\n", __func__, ref_prod, ref_cons, tx_offset);
-	inc_txbuf_ref(ref_prod);
+	dprintf("%s: tx_prod=%d tx_cons=%d tx_offset=%u\n", __func__, tx_prod, tx_cons, tx_offset);
+	inc_txbuf_ref(tx_prod);
 	out_bytes = tx_offset;
 	tx_offset = 0;
 
@@ -468,8 +468,8 @@ int lbufnet_write(void *data, unsigned int len, int sync_flags)
 	}
 avail_check:
 	clean_tx();
-	while (!tx_avail[ref_prod]) {
-		if (!tx_avail[ref_prod]) {
+	while (!tx_avail[tx_prod]) {
+		if (!tx_avail[tx_prod]) {
 			if (sync_flags == SF_NON_BLOCK)
 				return 0;
 			if (sync_flags == SF_BUSY_BLOCK)
@@ -487,10 +487,10 @@ avail_check:
 		goto avail_check;
 	}
 	/* now tx lbuf avaialable */
-	buf_addr = tx_lbuf[ref_prod] + tx_offset;
+	buf_addr = tx_lbuf[tx_prod] + tx_offset;
 	buf_addr = LBUF_CUR_TX_ADDR(buf_addr, 0, len);
 	memcpy(buf_addr, data, len);
-	tx_offset = LBUF_NEXT_TX_ADDR(buf_addr, len) - tx_lbuf[ref_prod];
+	tx_offset = LBUF_NEXT_TX_ADDR(buf_addr, len) - tx_lbuf[tx_prod];
 
 	return tx_offset;
 }
