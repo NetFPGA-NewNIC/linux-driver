@@ -161,11 +161,11 @@ int lbufnet_exit(void);
 static void lbufnet_finish(int sig)
 {
 	(void)sig;
+	lbufnet_exit();
 	if (exit_cb) {
 		lbufnet_stat.nr_drops = lh.nr_drops - prev_nr_drops;
 		exit_cb(&lbufnet_stat);
 	}
-	lbufnet_exit();
 	exit(0);
 }
 

@@ -110,10 +110,8 @@ int main(int argc, char *argv[])
 	gettimeofday(&start_tv, NULL);
 	for (sent = 0; sent < count; sent++)
 		lbufnet_output(&pkt);
-	/* XXX: need to consider the completion of the last packet for accurate measurement
-	 * but, it's negliable # of packets is sufficiently large */
-	show_stat(NULL);
 	lbufnet_exit();
+	show_stat(NULL);
 
 	return 0;
 }
