@@ -50,11 +50,10 @@
 #define inc_idx(idx)	\
 	do { idx = idx == NR_SLOT - 1 ? 0 : idx + 1; } while(0)
 
-/* in-flight TX buffer for user space, by default set to 2 * NR_SLOT
- * to fill the gap between descriptor availablity and buffer release time */
-#define NR_TX_USER_LBUF	(NR_SLOT << 1)
-#define inc_txbuf_ref(ref)	\
-	do { ref = ref == NR_TX_USER_LBUF - 1 ? 0 : ref + 1; } while(0)
+#define MIN_TX_USER_LBUF	4
+#define MAX_TX_USER_LBUF	32
+#define MIN_TX_USER_LBUF_SIZE	(4 << 10)	/* 4KB */
+#define MAX_TX_USER_LBUF_SIZE	(2 << 20)	/* 2MB */
 
 #ifndef PAGE_SHIFT
 #define PAGE_SHIFT	12
@@ -85,7 +84,7 @@ struct lbuf_user {
 	/* rx dword offset to clean (consume) in current lbuf */
 	unsigned int rx_cons;
 
-	unsigned long long tx_dma_addr[NR_TX_USER_LBUF];
+	unsigned long long tx_dma_addr[MAX_TX_USER_LBUF];
 	unsigned long long rx_dma_addr[NR_SLOT];
 	unsigned long long last_gc_addr;
 };

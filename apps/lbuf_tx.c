@@ -147,15 +147,15 @@ int main(int argc, char *argv[])
 	uint32_t i;
 	unsigned int batched_size;
 	int opt;
-	struct lbufnet_conf conf = { .flags = TX_ON, .pci_direct_access = 0 };
+	DEFINE_LBUFNET_CONF(conf);
 	struct packet_info pinfo = {
 		.src_ip = "11.0.0.1",
 		.dst_ip = "12.0.0.1",
 		.src_mac = "00:00:00:00:00:00",
 		.dst_mac = "ff:ff:ff:ff:ff:ff",
 		.len = 60,
-		.buflen = 2 << 20,	/* 2MB */
-		.batchlen = 2 << 20,	/* 2MB */
+		.buflen = 128 << 10,	/* 128KB */
+		.batchlen = 128 << 10,	/* 128KB */
 		.count = 1,
 		.sync_flag = SF_BLOCK,
 	};
@@ -181,14 +181,10 @@ int main(int argc, char *argv[])
 			pinfo.len = atoi(optarg);
 			break;
 		case 'b':
-			pinfo.buflen = atoi(optarg) << 10;	/* in KB */
-			if (pinfo.buflen < (4<<10) || pinfo.buflen > (1<<30)) {
-				fprintf(stderr, "Error: buflen must be >= 4K and <= 1G\n");
-				return -1;
-			}
+			pinfo.buflen = atoi(optarg);
 			break;
 		case 'B':
-			pinfo.batchlen = atoi(optarg) << 10;	/* in KB */
+			pinfo.batchlen = atoi(optarg);
 			break;
 		case 'f':
 			pinfo.sync_flag = atoi(optarg);
@@ -201,6 +197,7 @@ int main(int argc, char *argv[])
 	if (pinfo.batchlen > pinfo.buflen)
 		pinfo.batchlen = pinfo.buflen;
 
+	conf.flags = TX_ON;	/* tx only */
 	conf.tx_lbuf_size = pinfo.buflen;
 	if (lbufnet_init(&conf)) {
 		fprintf(stderr, "Error: failed to initialize lbufnet\n");

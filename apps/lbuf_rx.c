@@ -96,11 +96,7 @@ int main(int argc, char *argv[])
 {
 	int sync_flag = SF_BLOCK;
 	int opt;
-	struct lbufnet_conf conf = {
-		.flags = RX_ON,
-		.tx_lbuf_size = 0,	/* don't use tx by this app */
-		.pci_direct_access = 0,	/* use ioctl by default */
-	};
+	DEFINE_LBUFNET_CONF(conf);
 
 	while ((opt = getopt(argc, argv, "f:p")) != -1) {
 		switch(opt) {
@@ -112,6 +108,7 @@ int main(int argc, char *argv[])
 			break;
 		}
 	}
+	conf.flags = RX_ON;	/* rx only */
 	if (lbufnet_init(&conf)) {
 		fprintf(stderr, "Error: failed to initialize lbufnet\n");
 		return -1;

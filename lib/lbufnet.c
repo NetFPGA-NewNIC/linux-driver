@@ -69,20 +69,25 @@
 #define eprintf(format, arg...)	\
 	do { fprintf(stderr, NF10_DRV_NAME ": " format, ##arg); } while (0)
 
+static unsigned long flags;
 static int fd;
 static struct lbuf_user *ld;	/* lbuf descriptor */
 void *tx_completion;
 static void *rx_lbuf[NR_SLOT];
-static void *tx_lbuf[NR_TX_USER_LBUF];
+static void *tx_lbuf[MAX_TX_USER_LBUF];
 static int initialized;
 static unsigned int prev_nr_drops;
 static union lbuf_header lh;
 static unsigned int tx_lbuf_size;
-static int tx_prod;
-static int tx_cons;
+static unsigned int tx_lbuf_count;
+static unsigned int tx_prod;
+static unsigned int tx_cons;
 static uint32_t tx_offset;
-/* # of used bufs == NR_TX_USER_LBUF - 1 means it's full */
-#define tx_full()	(((tx_prod >= tx_cons ? 0 : NR_TX_USER_LBUF) + tx_prod - tx_cons) == (NR_TX_USER_LBUF - 1))
+
+#define inc_tx_pointer(pointer)	\
+	do { pointer = pointer == tx_lbuf_count - 1 ? 0 : pointer + 1; } while(0)
+/* # of used bufs == tx_lbuf_count - 1 means it's full */
+#define tx_full()	(((tx_prod >= tx_cons ? 0 : tx_lbuf_count) + tx_prod - tx_cons) == (tx_lbuf_count - 1))
 
 static lbufnet_input_cb input_cb;
 static lbufnet_exit_cb exit_cb;
@@ -165,19 +170,30 @@ static void lbufnet_finish(int sig)
 
 int lbufnet_init(struct lbufnet_conf *conf)
 {
-	int i;
-	unsigned long flags = conf->flags & UF_ON_MASK;
+	unsigned int i;
 
+	/* sanity checks before initialization */
+	if (conf->flags == 0) {	/* any flag of tx or rx should be on */
+		eprintf("Error: invalid flags=%lx\n", flags);
+		return -1;
+	}
+	flags = conf->flags & UF_ON_MASK;
+	if (flags & TX_ON) {
+		if (conf->tx_lbuf_count < MIN_TX_USER_LBUF || conf->tx_lbuf_count > MAX_TX_USER_LBUF) {
+			eprintf("Error: invalid tx_lbuf_count (must be between %d and %d)\n", MIN_TX_USER_LBUF, MAX_TX_USER_LBUF);
+			return -1;
+		}
+		if (conf->tx_lbuf_size < MIN_TX_USER_LBUF_SIZE || conf->tx_lbuf_size > MAX_TX_USER_LBUF_SIZE) {
+			eprintf("Error: invalid tx_lbuf_size (must be between %d and %d)\n", MIN_TX_USER_LBUF_SIZE, MAX_TX_USER_LBUF_SIZE);
+			return -1;
+		}
+	}
+
+	/* initialization */
 	if ((fd = open(DEV_FNAME, O_RDWR, 0755)) < 0) {
 		perror("open");
 		return -1;
 	}
-
-	if (flags == 0) {	/* any flag of tx or rx should be on */
-		fprintf(stderr, "Error: invalid flags=%lx\n", flags);
-		return -1;
-	}
-
 	if (ioctl(fd, NF10_IOCTL_CMD_INIT, flags)) {
 		perror("ioctl init");
 		return -1;
@@ -185,6 +201,7 @@ int lbufnet_init(struct lbufnet_conf *conf)
 	dprintf("initialized for direct user access for%s%s\n",
 		flags & UF_TX_ON ? " TX" : "", flags & UF_RX_ON ? " RX" : "");
 
+	/* 1st mmap is for main metadata */
 	ld = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (ld == MAP_FAILED) {
 		perror("mmap");
@@ -194,13 +211,14 @@ int lbufnet_init(struct lbufnet_conf *conf)
 	dprintf("\ttx_idx=%u rx_idx=%u\n", ld->tx_idx, ld->rx_idx);
 	dprintf("\trx_cons=%u\n", ld->rx_cons);
 	dprintf("\ttx_dma_addr\n");
-	for (i = 0; i < NR_TX_USER_LBUF; i++)
+	for (i = 0; i < conf->tx_lbuf_count; i++)
 		dprintf("\t\t[%d]=%p\n", i, (void *)ld->tx_dma_addr[i]);
 	dprintf("\trx_dma_addr\n");
 	for (i = 0; i < NR_SLOT; i++)
 		dprintf("\t\t[%d]=%p\n", i, (void *)ld->rx_dma_addr[i]);
 	dprintf("\tlast_gc_addr=0x%llx\n", ld->last_gc_addr);
 
+	/* 2nd mmap is for metadata of tx completion */
 	tx_completion = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (tx_completion == MAP_FAILED) {
 		perror("mmap");
@@ -212,6 +230,7 @@ int lbufnet_init(struct lbufnet_conf *conf)
 	dprintf("\tgc_addr=%p\n", (void *)LBUF_GC_ADDR(tx_completion));
 	ld->last_gc_addr = (uint64_t)LBUF_GC_ADDR(tx_completion);
 
+	/* 3rd mmap is for RX buffers reserved and used by kernel */
 	for (i = 0; i < NR_SLOT; i++) {
 		rx_lbuf[i] = mmap(NULL, LBUF_RX_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 		if (rx_lbuf[i] == MAP_FAILED) {
@@ -224,8 +243,9 @@ int lbufnet_init(struct lbufnet_conf *conf)
 	LBUF_GET_HEADER(rx_lbuf[ld->rx_idx], lh);
 	prev_nr_drops = lh.nr_drops;
 
+	/* 4th mmap is for TX buffers exclusively used by user (but allocated by kernel) */
 	if (conf->tx_lbuf_size) {
-		for (i = 0; i < NR_TX_USER_LBUF; i++) {
+		for (i = 0; i < conf->tx_lbuf_count; i++) {
 			tx_lbuf[i] = mmap(NULL, conf->tx_lbuf_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 			if (tx_lbuf[i] == MAP_FAILED) {
 				perror("mmap");
@@ -235,8 +255,10 @@ int lbufnet_init(struct lbufnet_conf *conf)
 					i, tx_lbuf[i], conf->tx_lbuf_size, (void *)ld->tx_dma_addr[i]);
 		}
 	}
+	tx_lbuf_count = conf->tx_lbuf_count;
 	tx_lbuf_size = conf->tx_lbuf_size;
 
+	/* set xmit_packet handler based on pci_direct_access config */
 	if (conf->pci_direct_access) {
 		char *fn = get_pci_filename();
 		if (!fn) {
@@ -319,7 +341,7 @@ static void clean_tx(void)
 		       gc_addr <= ld->tx_dma_addr[tx_cons] + tx_lbuf_size;
 		dprintf("%s: tx_cons=%d tx_prod=%d by gc_addr %p (last=%d)\n",
 		      __func__, tx_cons, tx_prod, (void *)gc_addr, last);
-		inc_txbuf_ref(tx_cons);
+		inc_tx_pointer(tx_cons);
 	} while (!last && tx_cons != tx_prod);
 	ld->last_gc_addr = gc_addr;
 }
@@ -336,12 +358,17 @@ int lbufnet_input(unsigned long nr_packets, int sync_flags)
 	int n;
 	unsigned long rx_packets = 0;
 
+	/* rx sanity check */
 	if (unlikely(!initialized)) {
 		eprintf("Error: lbuf is not initialized\n");
 		return -1;
 	}
 	if (unlikely(!input_cb)) {
 		eprintf("Error: input callback is not initialized\n");
+		return -1;
+	}
+	if (unlikely(!(flags & RX_ON))) {
+		eprintf("Error: RX is not turned on\n");
 		return -1;
 	}
 	if (unlikely(sync_flags != SF_BLOCK && sync_flags != SF_NON_BLOCK && sync_flags != SF_BUSY_BLOCK)) {
@@ -374,7 +401,7 @@ wait_rx:
 			goto wait_rx;
 		}
 		if (unlikely(!LBUF_IS_PKT_VALID(port_num, pkt_len))) {
-			fprintf(stderr, "Error: rx_idx=%d lbuf contains invalid pkt len=%u\n",
+			eprintf("Error: rx_idx=%d lbuf contains invalid pkt len=%u\n",
 				ld->rx_idx, pkt_len);
 			break;
 		}
@@ -409,22 +436,35 @@ wait_to_end_recv:
 	return rx_packets;
 }
 
+static inline int tx_sanity_check(void)
+{
+	if (unlikely(!initialized)) {
+		eprintf("Error: lbuf is not initialized\n");
+		return 0;
+	}
+	if (unlikely(!(flags & TX_ON))) {
+		eprintf("Error: TX is not turned on\n");
+		return 0;
+	}
+	if (unlikely(tx_lbuf_size == 0)) {
+		eprintf("Error: tx lbuf is not initialized\n");
+		return 0;
+	}
+	return 1;
+}
+
 int lbufnet_flush(int sync_flags)
 {
 	int out_bytes;
 	struct pollfd pfd = { .fd = fd, .events = POLLOUT };
 	int n;
 
-	if (unlikely(!initialized)) {
-		eprintf("Error: lbuf is not initialized\n");
+	if (!tx_sanity_check())
 		return -1;
-	}
-	if (unlikely(tx_lbuf_size == 0)) {
-		eprintf("Error: tx lbuf is not initialized\n");
-		return -1;
-	}
+
+	/* no data to be flushed */
 	if (unlikely(tx_offset == 0))
-		return -1;
+		return 0;
 
 	while (LBUF_TX_COMPLETION(tx_completion, ld->tx_idx) != TX_AVAIL) {
 		if (sync_flags == SF_NON_BLOCK)
@@ -444,7 +484,7 @@ int lbufnet_flush(int sync_flags)
 	xmit_packet();
 
 	dprintf("%s: tx_prod=%d tx_cons=%d tx_offset=%u\n", __func__, tx_prod, tx_cons, tx_offset);
-	inc_txbuf_ref(tx_prod);
+	inc_tx_pointer(tx_prod);
 	out_bytes = tx_offset;
 	tx_offset = 0;
 
@@ -457,14 +497,8 @@ int lbufnet_write(void *data, unsigned int len, int sync_flags)
 	struct pollfd pfd = { .fd = fd, .events = POLLOUT };
 	int n;
 
-	if (unlikely(!initialized)) {
-		eprintf("Error: lbuf is not initialized\n");
+	if (!tx_sanity_check())
 		return -1;
-	}
-	if (unlikely(tx_lbuf_size == 0)) {
-		eprintf("Error: tx lbuf is not initialized\n");
-		return -1;
-	}
 avail_check:
 	clean_tx();
 	while (tx_full()) {

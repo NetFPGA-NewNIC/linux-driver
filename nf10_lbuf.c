@@ -67,7 +67,7 @@ static struct lbuf_info {
 	struct nf10_adapter *adapter;
 	struct desc *rx_desc[NR_SLOT];
 	struct desc *tx_kern_desc;
-	struct desc *tx_user_desc[NR_TX_USER_LBUF];
+	struct desc *tx_user_desc[MAX_TX_USER_LBUF];
 	struct lbuf_user *u;
 	unsigned long long last_gc_addr;
 
@@ -272,8 +272,8 @@ static unsigned long get_tx_user_lbuf(struct nf10_adapter *adapter,
 {
 	struct desc *desc;
 
-	if (unlikely(ref >= NR_TX_USER_LBUF)) {
-		pr_err("%s: ref(=%d) >= %d\n", __func__, ref, NR_TX_USER_LBUF);
+	if (unlikely(ref >= MAX_TX_USER_LBUF)) {
+		pr_err("%s: ref(=%d) >= %d\n", __func__, ref, MAX_TX_USER_LBUF);
 		return 0;
 	}
 
@@ -294,7 +294,7 @@ static unsigned long get_tx_user_lbuf(struct nf10_adapter *adapter,
 
 static void put_tx_user_lbuf(struct nf10_adapter *adapter, int ref)
 {
-	if (ref >= NR_TX_USER_LBUF || !tx_user_desc(ref))
+	if (ref >= MAX_TX_USER_LBUF || !tx_user_desc(ref))
 		return;
 	free_lbuf(adapter, tx_user_desc(ref));
 	tx_user_desc(ref) = NULL;
@@ -310,7 +310,7 @@ static void free_tx_lbufs(struct nf10_adapter *adapter)
 			    lbuf_info.tx_completion_kern_addr,
 			    lbuf_info.tx_completion_dma_addr);
 
-	for (i = 0; i < NR_TX_USER_LBUF; i++)
+	for (i = 0; i < MAX_TX_USER_LBUF; i++)
 		put_tx_user_lbuf(adapter, i);
 }
 
@@ -479,9 +479,9 @@ static int nf10_lbuf_user_xmit(struct nf10_adapter *adapter, unsigned long arg)
 	netif_dbg(adapter, drv, default_netdev(adapter),
 		  "user_xmit: ref=%u len=%u arg=%lx\n", ref, len, arg);
 
-	if (unlikely(ref >= NR_TX_USER_LBUF)) {
+	if (unlikely(ref >= MAX_TX_USER_LBUF)) {
 		pr_err("%s: Error invalid ref %u >= %d\n",
-		       __func__, ref, NR_TX_USER_LBUF);
+		       __func__, ref, MAX_TX_USER_LBUF);
 		return -EINVAL;
 	}
 	desc = tx_user_desc(ref);

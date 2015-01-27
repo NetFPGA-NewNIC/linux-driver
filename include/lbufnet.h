@@ -43,8 +43,16 @@
 struct lbufnet_conf {
 	unsigned long flags;
 	unsigned int tx_lbuf_size;
+	unsigned int tx_lbuf_count;
 	int pci_direct_access;
 };
+#define DEFAULT_LBUFNET_CONF	{			\
+	.flags			= RX_ON | TX_ON,	\
+	.tx_lbuf_size		= 128 << 10,		\
+	.tx_lbuf_count		= 16,			\
+	.pci_direct_access	= 0,			\
+}
+#define DEFINE_LBUFNET_CONF(__conf)	struct lbufnet_conf __conf = DEFAULT_LBUFNET_CONF
 
 struct lbufnet_stat {
 	unsigned int nr_drops;

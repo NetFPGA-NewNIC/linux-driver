@@ -69,8 +69,8 @@ void show_stat(struct lbufnet_stat *s)
 int main(int argc, char *argv[])
 {
 	int opt;
-	struct lbufnet_conf conf = { .flags = TX_ON, .pci_direct_access = 0 };
 	void *pkt_data;
+	DEFINE_LBUFNET_CONF(conf);
 
 	while ((opt = getopt(argc, argv, "n:l:b:B:f:p")) != -1) {
 		switch(opt) {
@@ -94,6 +94,7 @@ int main(int argc, char *argv[])
 	}
 	memset(pkt_data, 0, len);
 
+	conf.flags = TX_ON;	/* tx only */
 	/* XXX: plus lbuf dma header size and 4KB-aligned:
 	 * will hide this dirty stuff inside liblbufnet */
 	conf.tx_lbuf_size = (len + 8 + 4095) & ~4095;	/* 4KB-aligned */

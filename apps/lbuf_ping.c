@@ -227,12 +227,8 @@ static int input_handler(void *data, unsigned int len)
 
 int main(int argc, char *argv[])
 {
-	struct lbufnet_conf conf = {
-		.flags = TX_ON | RX_ON,
-		.tx_lbuf_size = 4096,	/* 4K tx buffer */
-		.pci_direct_access = 0,	/* use ioctl by default */
-	};
 	int opt;
+	DEFINE_LBUFNET_CONF(conf);
 
 	while ((opt = getopt(argc, argv, "s:d:S:D:n:f:m:i:l:pc:")) != -1) {
 		switch(opt) {
@@ -275,6 +271,7 @@ int main(int argc, char *argv[])
 			break;
 		}
 	}
+	conf.tx_lbuf_size = 4096;	/* minimum size */
 	if (lbufnet_init(&conf)) {
 		fprintf(stderr, "Error: failed to initialize lbufnet\n");
 		return -1;
