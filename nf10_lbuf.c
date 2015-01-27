@@ -117,10 +117,10 @@ static struct lbuf_info {
 #define set_tx_dma_addr(i, v)	do { lbuf_info.u->tx_dma_addr[i] = v; } while(0)
 #define set_rx_dma_addr(i, v)	do { lbuf_info.u->rx_dma_addr[i] = v; } while(0)
 
-#define get_last_gc_addr()	(lbuf_info.last_gc_addr)
-#define set_last_gc_addr(v)	do { lbuf_info.last_gc_addr = (unsigned long)v; } while(0)
+#define get_sw_gc_addr()	(lbuf_info.last_gc_addr)
+#define set_sw_gc_addr(v)	do { lbuf_info.last_gc_addr = (unsigned long)v; } while(0)
 
-#define get_tx_last_gc_addr()	LBUF_GC_ADDR(lbuf_info.tx_completion_kern_addr)
+#define get_hw_gc_addr()	LBUF_GC_ADDR(lbuf_info.tx_completion_kern_addr)
 
 #define addr_in_lbuf(d, addr)	(addr > d->dma_addr && addr <= d->dma_addr + d->size)
 
@@ -210,14 +210,15 @@ static void __enable_irq(struct nf10_adapter *adapter)
 {
 	u64 last_rx_dma_addr =
 		(u64)&DWORD_GET(cur_rx_desc()->dma_addr, get_rx_cons());
-	if (get_last_gc_addr())
-		nf10_writeq(adapter, TX_SYNC_REG, get_last_gc_addr());
+	
+	if (get_sw_gc_addr())
+		nf10_writeq(adapter, TX_SYNC_REG, get_sw_gc_addr());
 	nf10_writeq(adapter, RX_SYNC_REG, last_rx_dma_addr);
 	wmb();
 	nf10_writel(adapter, IRQ_ENABLE_REG, IRQ_CTRL_VAL);
 	netif_dbg(adapter, intr, default_netdev(adapter),
 		  "enable_irq (wb=[tx:%p,rx:%p])\n",
-		  (void *)get_last_gc_addr(), (void *)last_rx_dma_addr);
+		  (void *)get_sw_gc_addr(), (void *)last_rx_dma_addr);
 }
 
 static void __disable_irq(struct nf10_adapter *adapter)
@@ -882,7 +883,7 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 
 static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 {
-	dma_addr_t gc_addr;
+	dma_addr_t hw_gc_addr, sw_gc_addr;
 	u32 cons;
 	struct desc *desc = tx_kern_desc();
 	int i;
@@ -890,26 +891,27 @@ static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 
 again:
 	rmb();
-	gc_addr = get_tx_last_gc_addr();
-	if (gc_addr == get_last_gc_addr() || nr_cleaned > TX_CLEAN_BUDGET)
+	hw_gc_addr = get_hw_gc_addr();
+	sw_gc_addr = get_sw_gc_addr();
+	if (hw_gc_addr == sw_gc_addr || nr_cleaned > TX_CLEAN_BUDGET)
 		goto out;
 
 	nr_cleaned++;
 
 	/* store last seen gc address to let hw know it */
-	set_last_gc_addr(gc_addr);
+	set_sw_gc_addr(hw_gc_addr);
 
-	if (!addr_in_lbuf(tx_kern_desc(), gc_addr)) {
+	if (!addr_in_lbuf(tx_kern_desc(), hw_gc_addr)) {
 		if (nf10_user_callback(adapter, 0))
 			return 1;	/* forcing napi to end */
 
 		/* user is not on, it may be the one for previous tx by user */
-		pr_warn("Warn: non-kernel gc_addr (%p) seen in irq\n",
-			(void *)gc_addr);
+		pr_warn("Warn: non-kernel hw_gc_addr (%p) seen in irq\n",
+			(void *)hw_gc_addr);
 		goto out;
 	}
 
-	cons = ALIGN(gc_addr - desc->dma_addr, 4096);
+	cons = ALIGN(hw_gc_addr - desc->dma_addr, 4096);
 	if (cons == desc->size)
 		cons = 0;
 	set_tx_cons(desc, cons);
@@ -923,8 +925,8 @@ again:
 			netif_wake_queue(adapter->netdev[i]);
 
 	netif_dbg(adapter, tx_done, default_netdev(adapter),
-		  "gctx: gc_addr=%p last=%p cons=%u\n", (void *)gc_addr,
-		  (void *)get_last_gc_addr(), get_tx_cons(desc));
+		  "gctx: gc_addr=(hw:%p,last-sw:%p) cons=%u\n",
+		  (void *)hw_gc_addr, (void *)sw_gc_addr, get_tx_cons(desc));
 
 	/* if still not cleaned for tx, try again to see if more gc needed */
 	if (!tx_clean_completed(desc))
