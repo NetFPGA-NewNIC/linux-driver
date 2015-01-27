@@ -147,6 +147,8 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 		netif_dbg(adapter, intr, default_netdev(adapter),
 			  "enable irq before sleeping (key=%lx)\n",
 			  wait ? wait->_key : -1);
+		if (wait->_key & (POLLOUT | POLLWRNORM))
+			adapter->user_flags |= UF_GC_ADDR_SYNC;
 		adapter->user_flags &= ~UF_IRQ_DISABLED;
 		nf10_enable_irq(adapter);
 	}

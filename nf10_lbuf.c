@@ -119,6 +119,7 @@ static struct lbuf_info {
 
 #define get_sw_gc_addr()	(lbuf_info.last_gc_addr)
 #define set_sw_gc_addr(v)	do { lbuf_info.last_gc_addr = (unsigned long)v; } while(0)
+#define get_sw_user_gc_addr()	(lbuf_info.u->last_gc_addr)
 
 #define get_hw_gc_addr()	LBUF_GC_ADDR(lbuf_info.tx_completion_kern_addr)
 
@@ -211,6 +212,10 @@ static void __enable_irq(struct nf10_adapter *adapter)
 	u64 last_rx_dma_addr =
 		(u64)&DWORD_GET(cur_rx_desc()->dma_addr, get_rx_cons());
 	
+	if (unlikely(adapter->user_flags & UF_GC_ADDR_SYNC)) {
+		set_sw_gc_addr(get_sw_user_gc_addr());
+		adapter->user_flags &= ~UF_GC_ADDR_SYNC;
+	}
 	if (get_sw_gc_addr())
 		nf10_writeq(adapter, TX_SYNC_REG, get_sw_gc_addr());
 	nf10_writeq(adapter, RX_SYNC_REG, last_rx_dma_addr);

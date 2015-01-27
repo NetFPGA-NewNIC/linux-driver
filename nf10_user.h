@@ -82,6 +82,7 @@
 #define UF_RX_PENDING	0x04
 #define UF_TX_PENDING	0x08
 #define UF_IRQ_DISABLED	0x10
+#define UF_GC_ADDR_SYNC	0x20
 
 extern int nf10_init_fops(struct nf10_adapter *adapter);
 extern int nf10_remove_fops(struct nf10_adapter *adapter);
