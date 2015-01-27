@@ -81,7 +81,9 @@ static unsigned int tx_lbuf_size;
 static int tx_prod;
 static int tx_cons;
 static uint32_t tx_offset;
-static uint8_t tx_avail[NR_TX_USER_LBUF];
+/* # of used bufs == NR_TX_USER_LBUF - 1 means it's full */
+#define tx_full()	(((tx_prod >= tx_cons ? 0 : NR_TX_USER_LBUF) + tx_prod - tx_cons) == (NR_TX_USER_LBUF - 1))
+
 static lbufnet_input_cb input_cb;
 static lbufnet_exit_cb exit_cb;
 struct lbufnet_stat lbufnet_stat;
@@ -229,7 +231,6 @@ int lbufnet_init(struct lbufnet_conf *conf)
 				perror("mmap");
 				return -1;
 			}
-			tx_avail[i] = 1;
 			dprintf("TX lbuf[%d] is mmaped to vaddr=%p w/ size=%u (dma_addr=%p)\n",
 					i, tx_lbuf[i], conf->tx_lbuf_size, (void *)ld->tx_dma_addr[i]);
 		}
@@ -316,7 +317,6 @@ static void clean_tx(void)
 	do {
 		last = gc_addr > ld->tx_dma_addr[tx_cons] &&
 		       gc_addr <= ld->tx_dma_addr[tx_cons] + tx_lbuf_size;
-		tx_avail[tx_cons] = 1;
 		dprintf("%s: tx_cons=%d tx_prod=%d by gc_addr %p (last=%d)\n",
 		      __func__, tx_cons, tx_prod, (void *)gc_addr, last);
 		inc_txbuf_ref(tx_cons);
@@ -440,7 +440,6 @@ int lbufnet_flush(int sync_flags)
 		} while (n <= 0 || pfd.revents & POLLERR);
 		clean_tx();
 	}
-	tx_avail[tx_prod] = 0;
 
 	xmit_packet();
 
@@ -468,8 +467,10 @@ int lbufnet_write(void *data, unsigned int len, int sync_flags)
 	}
 avail_check:
 	clean_tx();
-	while (!tx_avail[tx_prod]) {
-		if (!tx_avail[tx_prod]) {
+	while (tx_full()) {
+		dprintf("%s: tx_full=%d prod=%u cons=%u\n", __func__, tx_full(), tx_prod, tx_cons);
+		clean_tx();
+		if (tx_full()) {
 			if (sync_flags == SF_NON_BLOCK)
 				return 0;
 			if (sync_flags == SF_BUSY_BLOCK)
@@ -480,7 +481,6 @@ avail_check:
 				n = poll(&pfd, 1, 1000);
 			} while (n <= 0 || pfd.revents & POLLERR);
 		}
-		clean_tx();
 	}
 	if (unlikely(!LBUF_HAS_TX_ROOM(tx_lbuf_size, tx_offset, len))) {
 		lbufnet_flush(sync_flags);
