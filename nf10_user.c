@@ -300,6 +300,7 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			if (copy_to_user((void __user *)arg, &ret, sizeof(u64)))
 				return -EFAULT;
 		}
+		adapter->user_flags |= UF_GC_ADDR_SYNC;
 		nf10_enable_irq(adapter);
 		netif_dbg(adapter, drv, default_netdev(adapter),
 			  "user exit: flags=%x ret=%lu\n",

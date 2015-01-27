@@ -88,6 +88,7 @@ static uint32_t tx_offset;
 	do { pointer = pointer == tx_lbuf_count - 1 ? 0 : pointer + 1; } while(0)
 /* # of used bufs == tx_lbuf_count - 1 means it's full */
 #define tx_full()	(((tx_prod >= tx_cons ? 0 : tx_lbuf_count) + tx_prod - tx_cons) == (tx_lbuf_count - 1))
+#define tx_empty()	(tx_prod == tx_cons)
 
 static lbufnet_input_cb input_cb;
 static lbufnet_exit_cb exit_cb;
@@ -292,10 +293,30 @@ int lbufnet_init(struct lbufnet_conf *conf)
 	return 0;
 }
 
+static void clean_tx(void)
+{
+	int last = 0;
+	uint64_t gc_addr = LBUF_GC_ADDR(tx_completion);
+	if (gc_addr == ld->last_gc_addr)
+		return;
+	do {
+		last = gc_addr > ld->tx_dma_addr[tx_cons] &&
+		       gc_addr <= ld->tx_dma_addr[tx_cons] + tx_lbuf_size;
+		dprintf("%s: tx_cons=%d tx_prod=%d by gc_addr %p (last=%d)\n",
+		      __func__, tx_cons, tx_prod, (void *)gc_addr, last);
+		inc_tx_pointer(tx_cons);
+	} while (!last && tx_cons != tx_prod);
+	ld->last_gc_addr = gc_addr;
+}
+
 int lbufnet_exit(void)
 {
 	if (!initialized)
 		return -1;
+
+	/* waiting for draining all transmitted packets */
+	while(!tx_empty())
+		clean_tx();
 
 	if (ioctl(fd, NF10_IOCTL_CMD_EXIT)) {
 		perror("ioctl init");
@@ -328,22 +349,6 @@ static inline void deliver_packet(struct lbufnet_rx_packet *pkt, uint64_t *rx_pa
 {
 	*rx_packets += input_cb(pkt);
 	memset(pkt->data - LBUF_TX_METADATA_SIZE, 0, ALIGN(pkt->len, 8) + LBUF_TX_METADATA_SIZE);
-}
-
-static void clean_tx(void)
-{
-	int last = 0;
-	uint64_t gc_addr = LBUF_GC_ADDR(tx_completion);
-	if (gc_addr == ld->last_gc_addr)
-		return;
-	do {
-		last = gc_addr > ld->tx_dma_addr[tx_cons] &&
-		       gc_addr <= ld->tx_dma_addr[tx_cons] + tx_lbuf_size;
-		dprintf("%s: tx_cons=%d tx_prod=%d by gc_addr %p (last=%d)\n",
-		      __func__, tx_cons, tx_prod, (void *)gc_addr, last);
-		inc_tx_pointer(tx_cons);
-	} while (!last && tx_cons != tx_prod);
-	ld->last_gc_addr = gc_addr;
 }
 
 int lbufnet_input(unsigned long nr_packets, int sync_flags)
