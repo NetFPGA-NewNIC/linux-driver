@@ -459,7 +459,8 @@ static unsigned long nf10_lbuf_get_pfn(struct nf10_adapter *adapter,
 		idx -= 2;	/* adjust index to data */
 		if (idx < NR_SLOT && size == LBUF_RX_SIZE)	/* rx */
 			pfn = get_rx_desc(idx)->dma_addr >> PAGE_SHIFT;
-		else if (idx >= NR_SLOT)
+		else if (idx >= NR_SLOT && size >= MIN_TX_USER_LBUF_SIZE &&
+					   size <= MAX_TX_USER_LBUF_SIZE)
 			pfn = get_tx_user_lbuf(adapter, idx - NR_SLOT, size);
 			
 		netif_info(adapter, drv, default_netdev(adapter),
