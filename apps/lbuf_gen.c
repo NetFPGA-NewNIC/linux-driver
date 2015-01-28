@@ -50,7 +50,7 @@ struct timeval start_tv, end_tv;
 uint32_t sent;
 uint32_t len = 1 << 10;
 uint64_t count = 1000000;
-uint32_t sync_flag = SF_BLOCK;
+uint32_t sync_flags = SF_BLOCK;
 
 void show_stat(struct lbufnet_stat *s)
 {
@@ -69,8 +69,8 @@ void show_stat(struct lbufnet_stat *s)
 int main(int argc, char *argv[])
 {
 	int opt;
-	struct lbufnet_conf conf = { .flags = TX_ON, .pci_direct_access = 0 };
-	void *pkt_data;
+	struct lbufnet_tx_packet pkt;
+	DEFINE_LBUFNET_CONF(conf);
 
 	while ((opt = getopt(argc, argv, "n:l:b:B:f:p")) != -1) {
 		switch(opt) {
@@ -81,19 +81,22 @@ int main(int argc, char *argv[])
 			len = atoi(optarg);
 			break;
 		case 'f':
-			sync_flag = atoi(optarg);
+			sync_flags = atoi(optarg);
 			break;
 		case 'p':
 			conf.pci_direct_access = 1;
 			break;
 		}
 	}
-	if ((pkt_data = malloc(len)) == NULL) {
+	if ((pkt.data = malloc(len)) == NULL) {
 		fprintf(stderr, "Error: failed to allocate packet data\n");
 		return -1;
 	}
-	memset(pkt_data, 0, len);
+	memset(pkt.data, 0, len);
+	pkt.len = len;
+	pkt.sync_flags = sync_flags;
 
+	conf.flags = TX_ON;	/* tx only */
 	/* XXX: plus lbuf dma header size and 4KB-aligned:
 	 * will hide this dirty stuff inside liblbufnet */
 	conf.tx_lbuf_size = (len + 8 + 4095) & ~4095;	/* 4KB-aligned */
@@ -106,11 +109,9 @@ int main(int argc, char *argv[])
 
 	gettimeofday(&start_tv, NULL);
 	for (sent = 0; sent < count; sent++)
-		lbufnet_output(pkt_data, len, sync_flag);
-	/* XXX: need to consider the completion of the last packet for accurate measurement
-	 * but, it's negliable # of packets is sufficiently large */
-	show_stat(NULL);
+		lbufnet_output(&pkt);
 	lbufnet_exit();
+	show_stat(NULL);
 
 	return 0;
 }

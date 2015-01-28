@@ -152,6 +152,8 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 		netif_dbg(adapter, intr, default_netdev(adapter),
 			  "enable irq before sleeping (key=%lx)\n",
 			  wait ? wait->pt_key : -1);
+		if (wait->_key & (POLLOUT | POLLWRNORM))
+			adapter->user_flags |= UF_GC_ADDR_SYNC;
 		adapter->user_flags &= ~UF_IRQ_DISABLED;
 		nf10_enable_irq(adapter);
 	}
@@ -275,6 +277,10 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	{
 		unsigned long ret = 0;
 
+		if (adapter->user_flags) {
+			pr_err("Error: nf10 user stack in use\n");
+			return -EBUSY;
+		}
 		adapter->nr_user_mmap = 0;
 		adapter->user_flags |= UF_IRQ_DISABLED;
 		adapter->user_flags |= (arg & UF_ON_MASK);
@@ -303,6 +309,7 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			if (copy_to_user((void __user *)arg, &ret, sizeof(u64)))
 				return -EFAULT;
 		}
+		adapter->user_flags |= UF_GC_ADDR_SYNC;
 		nf10_enable_irq(adapter);
 		netif_dbg(adapter, drv, default_netdev(adapter),
 			  "user exit: flags=%x ret=%lu\n",

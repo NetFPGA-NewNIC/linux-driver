@@ -57,7 +57,7 @@
 #define MODE_PONG	1
 
 #define MAX_PAYLOAD_SIZE	1472
-struct packet {
+struct icmp_packet {
 	struct ether_header ethhdr;
 	struct ip iphdr;
 	struct icmphdr icmphdr;
@@ -75,14 +75,14 @@ struct ping_info {
 	uint16_t len;
 	uint16_t datalen;
 	uint8_t checksum;
-	uint32_t sync_flag;
-	struct packet pkt_data;
+	uint32_t sync_flags;
+	struct icmp_packet pkt_data;
 } pinfo = {
 	.mode = MODE_PING,	/* ping */
 	.count = 0,		/* forever */
 	.interval_us = 1000000,	/* 1 sec */
 	.datalen = 56,		/* same default as ping */
-	.sync_flag = SF_BLOCK,
+	.sync_flags = SF_BLOCK,
 	.checksum = 1,
 };
 
@@ -123,7 +123,7 @@ void init_packet(struct ping_info *pinfo)
 	struct in_addr ip_src, ip_dst;
 	uint16_t ip_len;
 
-	memset(&pinfo->pkt_data, 0, sizeof(struct packet));
+	memset(&pinfo->pkt_data, 0, sizeof(struct icmp_packet));
 	pinfo->len = sizeof(struct ether_header) + sizeof(struct iphdr) + sizeof(struct icmphdr) + pinfo->datalen;
 
 	inet_aton(pinfo->src_ip, &ip_src);
@@ -155,27 +155,27 @@ void init_packet(struct ping_info *pinfo)
 	eh->ether_type	= htons(ETHERTYPE_IP);
 }
 
-static int input_handler(void *data, unsigned int len)
+static int input_handler(struct lbufnet_rx_packet *rx_pkt)
 {
-	struct packet *pkt = data;
+	struct icmp_packet *icmp_pkt = rx_pkt->data;
 	struct timespec ts;
 	uint16_t icmplen;
 
-	if (pkt->iphdr.ip_p != IPPROTO_ICMP)
+	if (icmp_pkt->iphdr.ip_p != IPPROTO_ICMP)
 		return 0;
 
 	if (pinfo.mode == MODE_PING &&
-	    (pkt->icmphdr.type != ICMP_ECHOREPLY ||
-	     pkt->icmphdr.un.echo.id != echo_id))
+	    (icmp_pkt->icmphdr.type != ICMP_ECHOREPLY ||
+	     icmp_pkt->icmphdr.un.echo.id != echo_id))
 		return 0;
 
 	if (pinfo.mode == MODE_PONG &&
-	    pkt->icmphdr.type != ICMP_ECHO)
+	    icmp_pkt->icmphdr.type != ICMP_ECHO)
 		return 0;
 
-	icmplen = len - sizeof(struct ether_header) - sizeof(struct ip);
+	icmplen = rx_pkt->len - sizeof(struct ether_header) - sizeof(struct ip);
 	/* check if checksum is correct */
-	if (pinfo.checksum && wrapsum(checksum(&pkt->icmphdr, icmplen, 0)) != 0) {
+	if (pinfo.checksum && wrapsum(checksum(&icmp_pkt->icmphdr, icmplen, 0)) != 0) {
 		fprintf(stderr, "ping request received, but ICMP checksum is incorrect!\n");
 		return 1;
 	}
@@ -192,47 +192,49 @@ static int input_handler(void *data, unsigned int len)
 		}
 		elapsed_ms = ts.tv_sec * 1000 + ((double)ts.tv_nsec / 1000000);
 		printf("%lu bytes from %s: icmp_req=%u ttl=%u time=%.6lf ms\n",
-			len - sizeof(struct ether_header) - sizeof(struct iphdr),
-			inet_ntoa(pkt->iphdr.ip_src),
-			ntohs(pkt->icmphdr.un.echo.sequence),
-			pkt->iphdr.ip_ttl,
+			rx_pkt->len - sizeof(struct ether_header) - sizeof(struct iphdr),
+			inet_ntoa(icmp_pkt->iphdr.ip_src),
+			ntohs(icmp_pkt->icmphdr.un.echo.sequence),
+			icmp_pkt->iphdr.ip_ttl,
 			elapsed_ms);
 	}
 	else if (pinfo.mode == MODE_PONG) {
 		struct in_addr ip_tmp;
 		uint8_t mac_tmp[ETH_ALEN];
+		struct lbufnet_tx_packet tx_pkt = {
+			.data = rx_pkt->data,
+			.len  = rx_pkt->len,
+			.port_num = rx_pkt->port_num,
+			.sync_flags = pinfo.sync_flags,
+		};
 
-		pkt->icmphdr.type = ICMP_ECHOREPLY;
-		pkt->icmphdr.checksum = 0;
+		icmp_pkt->icmphdr.type = ICMP_ECHOREPLY;
+		icmp_pkt->icmphdr.checksum = 0;
 		/* swap ip and mac */
-		ip_tmp = pkt->iphdr.ip_src;
-		pkt->iphdr.ip_src = pkt->iphdr.ip_dst;
-		pkt->iphdr.ip_dst = ip_tmp;
-		memcpy(mac_tmp, pkt->ethhdr.ether_shost, ETH_ALEN);
-		memcpy(pkt->ethhdr.ether_shost, pkt->ethhdr.ether_dhost, ETH_ALEN);
-		memcpy(pkt->ethhdr.ether_dhost, mac_tmp, ETH_ALEN);
+		ip_tmp = icmp_pkt->iphdr.ip_src;
+		icmp_pkt->iphdr.ip_src = icmp_pkt->iphdr.ip_dst;
+		icmp_pkt->iphdr.ip_dst = ip_tmp;
+		memcpy(mac_tmp, icmp_pkt->ethhdr.ether_shost, ETH_ALEN);
+		memcpy(icmp_pkt->ethhdr.ether_shost, icmp_pkt->ethhdr.ether_dhost, ETH_ALEN);
+		memcpy(icmp_pkt->ethhdr.ether_dhost, mac_tmp, ETH_ALEN);
 		if (pinfo.checksum)
-			pkt->icmphdr.checksum = wrapsum(checksum(&pkt->icmphdr, icmplen, 0));
+			icmp_pkt->icmphdr.checksum = wrapsum(checksum(&icmp_pkt->icmphdr, icmplen, 0));
 
-		lbufnet_output(data, len, pinfo.sync_flag);
+		lbufnet_output(&tx_pkt);
 		clock_gettime(CLOCK_MONOTONIC, &ts);
 		printf("[%lu.%09lu sec] pong for ping request %lu bytes from %s: icmp_req=%u\n",
 			ts.tv_sec, ts.tv_nsec,
-			len - sizeof(struct ether_header) - sizeof(struct iphdr),
-			inet_ntoa(pkt->iphdr.ip_src),
-			ntohs(pkt->icmphdr.un.echo.sequence));
+			rx_pkt->len - sizeof(struct ether_header) - sizeof(struct iphdr),
+			inet_ntoa(icmp_pkt->iphdr.ip_src),
+			ntohs(icmp_pkt->icmphdr.un.echo.sequence));
 	}
 	return 1;
 }
 
 int main(int argc, char *argv[])
 {
-	struct lbufnet_conf conf = {
-		.flags = TX_ON | RX_ON,
-		.tx_lbuf_size = 4096,	/* 4K tx buffer */
-		.pci_direct_access = 0,	/* use ioctl by default */
-	};
 	int opt;
+	DEFINE_LBUFNET_CONF(conf);
 
 	while ((opt = getopt(argc, argv, "s:d:S:D:n:f:m:i:l:pc:")) != -1) {
 		switch(opt) {
@@ -265,7 +267,7 @@ int main(int argc, char *argv[])
 			}
 			break;
 		case 'f':
-			pinfo.sync_flag = atoi(optarg);
+			pinfo.sync_flags = atoi(optarg);
 			break;
 		case 'p':
 			conf.pci_direct_access = 1;
@@ -275,6 +277,7 @@ int main(int argc, char *argv[])
 			break;
 		}
 	}
+	conf.tx_lbuf_size = 4096;	/* minimum size */
 	if (lbufnet_init(&conf)) {
 		fprintf(stderr, "Error: failed to initialize lbufnet\n");
 		return -1;
@@ -282,6 +285,7 @@ int main(int argc, char *argv[])
 	lbufnet_register_input_callback(input_handler);
 	if (pinfo.mode == MODE_PING) {
 		uint16_t sequence;
+		struct lbufnet_tx_packet tx_pkt;
 
 		if (!pinfo.src_ip || !pinfo.src_mac || !pinfo.dst_ip || !pinfo.dst_mac) {
 			fprintf(stderr, "ping mode requires src and dst ip/mac addresses\n");
@@ -292,21 +296,25 @@ int main(int argc, char *argv[])
 			pinfo.datalen + sizeof(struct icmphdr) + sizeof(struct iphdr));
 
 		init_packet(&pinfo);
+		tx_pkt.data = &pinfo.pkt_data;
+		tx_pkt.len = pinfo.len;
+		tx_pkt.port_num = 0;	/* use port 0 by default */
+		tx_pkt.sync_flags = pinfo.sync_flags;
 		sequence = 1;
 		do {
 			pinfo.pkt_data.icmphdr.un.echo.sequence = htons(sequence);
 			if (pinfo.checksum)
 				pinfo.pkt_data.icmphdr.checksum = wrapsum(base_sum + sequence);
 			clock_gettime(CLOCK_MONOTONIC, &start_ts);
-			lbufnet_output(&pinfo.pkt_data, pinfo.len, pinfo.sync_flag);
-			lbufnet_input(1, pinfo.sync_flag);
+			lbufnet_output(&tx_pkt);		/* send ping */
+			lbufnet_input(1, pinfo.sync_flags);	/* wait pong */
 			usleep(pinfo.interval_us);
 			sequence++;
 		} while(pinfo.count == 0 || sequence <= pinfo.count);
 	}
 	else if (pinfo.mode == MODE_PONG) {
 		printf("PONG waits PING...\n");
-		lbufnet_input(LBUFNET_INPUT_FOREVER, pinfo.sync_flag);
+		lbufnet_input(LBUFNET_INPUT_FOREVER, pinfo.sync_flags);
 	}
 
 	return 0;

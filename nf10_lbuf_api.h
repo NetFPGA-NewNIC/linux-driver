@@ -50,11 +50,10 @@
 #define inc_idx(idx)	\
 	do { idx = idx == NR_SLOT - 1 ? 0 : idx + 1; } while(0)
 
-/* in-flight TX buffer for user space, by default set to 2 * NR_SLOT
- * to fill the gap between descriptor availablity and buffer release time */
-#define NR_TX_USER_LBUF	(NR_SLOT << 1)
-#define inc_txbuf_ref(ref)	\
-	do { ref = ref == NR_TX_USER_LBUF - 1 ? 0 : ref + 1; } while(0)
+#define MIN_TX_USER_LBUF	4
+#define MAX_TX_USER_LBUF	32
+#define MIN_TX_USER_LBUF_SIZE	(4 << 10)	/* 4KB */
+#define MAX_TX_USER_LBUF_SIZE	(2 << 20)	/* 2MB */
 
 #ifndef PAGE_SHIFT
 #define PAGE_SHIFT	12
@@ -85,7 +84,7 @@ struct lbuf_user {
 	/* rx dword offset to clean (consume) in current lbuf */
 	unsigned int rx_cons;
 
-	unsigned long long tx_dma_addr[NR_TX_USER_LBUF];
+	unsigned long long tx_dma_addr[MAX_TX_USER_LBUF];
 	unsigned long long rx_dma_addr[NR_SLOT];
 	unsigned long long last_gc_addr;
 };
@@ -133,7 +132,7 @@ struct lbuf_user {
 
 /* check functions */
 #define LBUF_IS_VALID(nr_dwords)		(nr_dwords > NR_RESERVED_DWORDS && nr_dwords <= (LBUF_SIZE >> 2))
-#define LBUF_IS_PORT_VALID(port_num)		(port_num >=0 && port_num < LBUF_NR_PORTS)
+#define LBUF_IS_PORT_VALID(port_num)		(port_num < LBUF_NR_PORTS)
 #define LBUF_IS_PKT_VALID(port_num, pkt_len)	(LBUF_IS_PORT_VALID(port_num) && pkt_len >= 60 && pkt_len <= 1514)
 
 #if defined(CONFIG_NR_PORTS) && (CONFIG_NR_PORTS == 1)
@@ -160,7 +159,7 @@ static inline unsigned int LBUF_ENCODE_PORT_NUM(int port_num)
 	/* encode */
 	static unsigned int port_map[] = {0x02, 0x08, 0x20, 0x80};
 	if (!LBUF_IS_PORT_VALID(port_num))
-		return 0;
+		return 0x02;	/* if invalid, port 0 by default */
 	return port_map[port_num];
 }
 

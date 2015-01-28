@@ -80,15 +80,14 @@ void show_stat(struct lbufnet_stat *s)
 			((total_rx_bytes + (24 * total_rx_packets)) * 8) * 1e-9 / elapsed_sec);
 }
 
-int input_handler(void *data, unsigned int len)
+int input_handler(struct lbufnet_rx_packet *pkt)
 {
-	(void)data;
 	if (total_rx_packets == 0)
 		gettimeofday(&start_tv, NULL);
 	else
 		gettimeofday(&end_tv, NULL);
 	total_rx_packets++;
-	total_rx_bytes += len;
+	total_rx_bytes += pkt->len;
 	return 1;
 }
 
@@ -96,11 +95,7 @@ int main(int argc, char *argv[])
 {
 	int sync_flag = SF_BLOCK;
 	int opt;
-	struct lbufnet_conf conf = {
-		.flags = RX_ON,
-		.tx_lbuf_size = 0,	/* don't use tx by this app */
-		.pci_direct_access = 0,	/* use ioctl by default */
-	};
+	DEFINE_LBUFNET_CONF(conf);
 
 	while ((opt = getopt(argc, argv, "f:p")) != -1) {
 		switch(opt) {
@@ -112,6 +107,7 @@ int main(int argc, char *argv[])
 			break;
 		}
 	}
+	conf.flags = RX_ON;	/* rx only */
 	if (lbufnet_init(&conf)) {
 		fprintf(stderr, "Error: failed to initialize lbufnet\n");
 		return -1;

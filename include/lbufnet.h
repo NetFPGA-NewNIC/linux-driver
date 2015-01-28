@@ -43,8 +43,16 @@
 struct lbufnet_conf {
 	unsigned long flags;
 	unsigned int tx_lbuf_size;
+	unsigned int tx_lbuf_count;
 	int pci_direct_access;
 };
+#define DEFAULT_LBUFNET_CONF	{			\
+	.flags			= RX_ON | TX_ON,	\
+	.tx_lbuf_size		= 128 << 10,		\
+	.tx_lbuf_count		= 16,			\
+	.pci_direct_access	= 0,			\
+}
+#define DEFINE_LBUFNET_CONF(__conf)	struct lbufnet_conf __conf = DEFAULT_LBUFNET_CONF
 
 struct lbufnet_stat {
 	unsigned int nr_drops;
@@ -58,7 +66,21 @@ enum {
 	SF_BUSY_BLOCK,
 };
 
-typedef int (*lbufnet_input_cb)(void *data, unsigned int len);
+struct lbufnet_tx_packet {
+	void *data;
+	unsigned int len;
+	unsigned int port_num;
+	int sync_flags;
+};
+
+struct lbufnet_rx_packet {
+	void *data;
+	unsigned int len;
+	unsigned int port_num;
+	unsigned long long timestamp;
+};
+
+typedef int (*lbufnet_input_cb)(struct lbufnet_rx_packet *pkt);
 typedef void (*lbufnet_exit_cb)(struct lbufnet_stat *stat);
 
 int lbufnet_init(struct lbufnet_conf *conf);
@@ -67,5 +89,5 @@ int lbufnet_register_input_callback(lbufnet_input_cb cb);
 int lbufnet_register_exit_callback(lbufnet_exit_cb cb);
 int lbufnet_input(unsigned long nr_packets, int sync_flags);
 int lbufnet_flush(int sync_flags);
-int lbufnet_write(void *data, unsigned int len, int sync_flags);
-int lbufnet_output(void *data, unsigned len, int sync_flags);
+int lbufnet_write(struct lbufnet_tx_packet *pkt);
+int lbufnet_output(struct lbufnet_tx_packet *pkt);

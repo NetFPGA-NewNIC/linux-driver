@@ -48,6 +48,7 @@
 #include <netinet/ip.h>
 #include <netinet/udp.h>
 #include <arpa/inet.h>
+#include <sys/time.h>
 
 #include "lbufnet.h"
 
@@ -69,8 +70,20 @@ struct packet_info {
 	uint32_t buflen;
 	uint32_t batchlen;
 	uint64_t count;
-	uint32_t sync_flag;
+	uint32_t sync_flags;
 	struct packet pkt_data;
+};
+
+struct packet_info pinfo = {
+	.src_ip = "11.0.0.1",
+	.dst_ip = "12.0.0.1",
+	.src_mac = "00:00:00:00:00:00",
+	.dst_mac = "ff:ff:ff:ff:ff:ff",
+	.len = 60,
+	.buflen = 128 << 10,	/* 128KB */
+	.batchlen = 128 << 10,	/* 128KB */
+	.count = 1,
+	.sync_flags = SF_BLOCK,
 };
 
 /* wrapsum & checksum are taken from pkt-gen.c in netmap */
@@ -142,25 +155,37 @@ void init_packet(struct packet_info *pinfo)
 	eh->ether_type	= htons(ETHERTYPE_IP);
 }
 
+struct timeval start_tv, end_tv;
+uint64_t tx_packets;
+void show_stat(struct lbufnet_stat *s)
+{
+	struct timeval elapsed_tv;
+	double elapsed_sec;
+	double tx_gbits = tx_packets * pinfo.len * 8 * 1e-9;
+
+	(void)s;
+	gettimeofday(&end_tv, NULL);
+	timersub(&end_tv, &start_tv, &elapsed_tv);
+	elapsed_sec = elapsed_tv.tv_sec + ((double)elapsed_tv.tv_usec / 1000000);
+	printf("Elapsed time = %.6lf sec\n", elapsed_sec);
+	if (elapsed_sec > 0)
+		printf("Throughput = %.2lf pps (%.6lf Gbps raw=%.6lf Gbps)\n",
+			tx_packets / elapsed_sec,
+			tx_gbits / elapsed_sec,
+			/* add 24B = 20B framing(12B IFG + 8B Preemble) + 4B CRC */
+			(tx_gbits + (24 * 8 * tx_packets * 1e-9)) / elapsed_sec);
+}
+
 int main(int argc, char *argv[])
 {
-	uint32_t i;
 	unsigned int batched_size;
 	int opt;
-	struct lbufnet_conf conf = { .flags = TX_ON, .pci_direct_access = 0 };
-	struct packet_info pinfo = {
-		.src_ip = "11.0.0.1",
-		.dst_ip = "12.0.0.1",
-		.src_mac = "00:00:00:00:00:00",
-		.dst_mac = "ff:ff:ff:ff:ff:ff",
-		.len = 60,
-		.buflen = 2 << 20,	/* 2MB */
-		.batchlen = 2 << 20,	/* 2MB */
-		.count = 1,
-		.sync_flag = SF_BLOCK,
-	};
+	unsigned int nr_ports = 1;
+	unsigned int port_num = 0;
+	struct lbufnet_tx_packet pkt;
+	DEFINE_LBUFNET_CONF(conf);
 
-	while ((opt = getopt(argc, argv, "s:d:S:D:n:l:b:B:f:p")) != -1) {
+	while ((opt = getopt(argc, argv, "s:d:S:D:n:l:b:B:f:pP:")) != -1) {
 		switch(opt) {
 		case 's':
 			pinfo.src_ip = optarg;
@@ -181,26 +206,26 @@ int main(int argc, char *argv[])
 			pinfo.len = atoi(optarg);
 			break;
 		case 'b':
-			pinfo.buflen = atoi(optarg) << 10;	/* in KB */
-			if (pinfo.buflen < (4<<10) || pinfo.buflen > (1<<30)) {
-				fprintf(stderr, "Error: buflen must be >= 4K and <= 1G\n");
-				return -1;
-			}
+			pinfo.buflen = atoi(optarg);
 			break;
 		case 'B':
-			pinfo.batchlen = atoi(optarg) << 10;	/* in KB */
+			pinfo.batchlen = atoi(optarg);
 			break;
 		case 'f':
-			pinfo.sync_flag = atoi(optarg);
+			pinfo.sync_flags = atoi(optarg);
 			break;
 		case 'p':
 			conf.pci_direct_access = 1;
+			break;
+		case 'P':
+			nr_ports = atoi(optarg);
 			break;
 		}
 	}
 	if (pinfo.batchlen > pinfo.buflen)
 		pinfo.batchlen = pinfo.buflen;
 
+	conf.flags = TX_ON;	/* tx only */
 	conf.tx_lbuf_size = pinfo.buflen;
 	if (lbufnet_init(&conf)) {
 		fprintf(stderr, "Error: failed to initialize lbufnet\n");
@@ -208,14 +233,19 @@ int main(int argc, char *argv[])
 	}
 	init_packet(&pinfo);
 
-	for (i = 0; i < pinfo.count; i++) {
-		batched_size = lbufnet_write(&pinfo.pkt_data, pinfo.len, pinfo.sync_flag);
+	pkt.data = &pinfo.pkt_data;
+	pkt.len = pinfo.len;
+	pkt.sync_flags = pinfo.sync_flags;
+	gettimeofday(&start_tv, NULL);
+	for (tx_packets = 0; tx_packets < pinfo.count; tx_packets++) {
+		pkt.port_num = (port_num++) % nr_ports; 
+		batched_size = lbufnet_write(&pkt);
 		if (batched_size >= pinfo.batchlen)
-			lbufnet_flush(pinfo.sync_flag);
+			lbufnet_flush(pkt.sync_flags);
 	}
-	lbufnet_flush(pinfo.sync_flag);
-	printf("%d packets sent\n", i);
+	lbufnet_flush(pkt.sync_flags);
 	lbufnet_exit();
+	show_stat(NULL);
 
 	return 0;
 }

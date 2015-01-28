@@ -67,7 +67,7 @@ static struct lbuf_info {
 	struct nf10_adapter *adapter;
 	struct desc *rx_desc[NR_SLOT];
 	struct desc *tx_kern_desc;
-	struct desc *tx_user_desc[NR_TX_USER_LBUF];
+	struct desc *tx_user_desc[MAX_TX_USER_LBUF];
 	struct lbuf_user *u;
 	unsigned long long last_gc_addr;
 
@@ -79,7 +79,7 @@ static struct lbuf_info {
 	struct device_attribute stat_attr;
 } lbuf_info;
 
-#define DEFAULT_INTR_PERIOD_USECS	0
+#define DEFAULT_INTR_PERIOD_USECS	30
 #define TX_CLEAN_BUDGET			64
 
 /* 
@@ -117,10 +117,11 @@ static struct lbuf_info {
 #define set_tx_dma_addr(i, v)	do { lbuf_info.u->tx_dma_addr[i] = v; } while(0)
 #define set_rx_dma_addr(i, v)	do { lbuf_info.u->rx_dma_addr[i] = v; } while(0)
 
-#define get_last_gc_addr()	(lbuf_info.last_gc_addr)
-#define set_last_gc_addr(v)	do { lbuf_info.last_gc_addr = (unsigned long)v; } while(0)
+#define get_sw_gc_addr()	(lbuf_info.last_gc_addr)
+#define set_sw_gc_addr(v)	do { lbuf_info.last_gc_addr = (unsigned long)v; } while(0)
+#define get_sw_user_gc_addr()	(lbuf_info.u->last_gc_addr)
 
-#define get_tx_last_gc_addr()	LBUF_GC_ADDR(lbuf_info.tx_completion_kern_addr)
+#define get_hw_gc_addr()	LBUF_GC_ADDR(lbuf_info.tx_completion_kern_addr)
 
 #define addr_in_lbuf(d, addr)	(addr > d->dma_addr && addr <= d->dma_addr + d->size)
 
@@ -210,14 +211,19 @@ static void __enable_irq(struct nf10_adapter *adapter)
 {
 	u64 last_rx_dma_addr =
 		(u64)&DWORD_GET(cur_rx_desc()->dma_addr, get_rx_cons());
-	if (get_last_gc_addr())
-		nf10_writeq(adapter, TX_SYNC_REG, get_last_gc_addr());
+	
+	if (unlikely(adapter->user_flags & UF_GC_ADDR_SYNC)) {
+		set_sw_gc_addr(get_sw_user_gc_addr());
+		adapter->user_flags &= ~UF_GC_ADDR_SYNC;
+	}
+	if (get_sw_gc_addr())
+		nf10_writeq(adapter, TX_SYNC_REG, get_sw_gc_addr());
 	nf10_writeq(adapter, RX_SYNC_REG, last_rx_dma_addr);
 	wmb();
 	nf10_writel(adapter, IRQ_ENABLE_REG, IRQ_CTRL_VAL);
 	netif_dbg(adapter, intr, default_netdev(adapter),
 		  "enable_irq (wb=[tx:%p,rx:%p])\n",
-		  (void *)get_last_gc_addr(), (void *)last_rx_dma_addr);
+		  (void *)get_sw_gc_addr(), (void *)last_rx_dma_addr);
 }
 
 static void __disable_irq(struct nf10_adapter *adapter)
@@ -266,8 +272,8 @@ static unsigned long get_tx_user_lbuf(struct nf10_adapter *adapter,
 {
 	struct desc *desc;
 
-	if (unlikely(ref >= NR_TX_USER_LBUF)) {
-		pr_err("%s: ref(=%d) >= %d\n", __func__, ref, NR_TX_USER_LBUF);
+	if (unlikely(ref >= MAX_TX_USER_LBUF)) {
+		pr_err("%s: ref(=%d) >= %d\n", __func__, ref, MAX_TX_USER_LBUF);
 		return 0;
 	}
 
@@ -288,7 +294,7 @@ static unsigned long get_tx_user_lbuf(struct nf10_adapter *adapter,
 
 static void put_tx_user_lbuf(struct nf10_adapter *adapter, int ref)
 {
-	if (ref >= NR_TX_USER_LBUF || !tx_user_desc(ref))
+	if (ref >= MAX_TX_USER_LBUF || !tx_user_desc(ref))
 		return;
 	free_lbuf(adapter, tx_user_desc(ref));
 	tx_user_desc(ref) = NULL;
@@ -304,7 +310,7 @@ static void free_tx_lbufs(struct nf10_adapter *adapter)
 			    lbuf_info.tx_completion_kern_addr,
 			    lbuf_info.tx_completion_dma_addr);
 
-	for (i = 0; i < NR_TX_USER_LBUF; i++)
+	for (i = 0; i < MAX_TX_USER_LBUF; i++)
 		put_tx_user_lbuf(adapter, i);
 }
 
@@ -453,7 +459,8 @@ static unsigned long nf10_lbuf_get_pfn(struct nf10_adapter *adapter,
 		idx -= 2;	/* adjust index to data */
 		if (idx < NR_SLOT && size == LBUF_RX_SIZE)	/* rx */
 			pfn = get_rx_desc(idx)->dma_addr >> PAGE_SHIFT;
-		else if (idx >= NR_SLOT)
+		else if (idx >= NR_SLOT && size >= MIN_TX_USER_LBUF_SIZE &&
+					   size <= MAX_TX_USER_LBUF_SIZE)
 			pfn = get_tx_user_lbuf(adapter, idx - NR_SLOT, size);
 			
 		netif_info(adapter, drv, default_netdev(adapter),
@@ -473,9 +480,9 @@ static int nf10_lbuf_user_xmit(struct nf10_adapter *adapter, unsigned long arg)
 	netif_dbg(adapter, drv, default_netdev(adapter),
 		  "user_xmit: ref=%u len=%u arg=%lx\n", ref, len, arg);
 
-	if (unlikely(ref >= NR_TX_USER_LBUF)) {
+	if (unlikely(ref >= MAX_TX_USER_LBUF)) {
 		pr_err("%s: Error invalid ref %u >= %d\n",
-		       __func__, ref, NR_TX_USER_LBUF);
+		       __func__, ref, MAX_TX_USER_LBUF);
 		return -EINVAL;
 	}
 	desc = tx_user_desc(ref);
@@ -882,7 +889,7 @@ static netdev_tx_t nf10_lbuf_start_xmit(struct sk_buff *skb,
 
 static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 {
-	dma_addr_t gc_addr;
+	dma_addr_t hw_gc_addr, sw_gc_addr;
 	u32 cons;
 	struct desc *desc = tx_kern_desc();
 	int i;
@@ -890,26 +897,27 @@ static int nf10_lbuf_clean_tx_irq(struct nf10_adapter *adapter)
 
 again:
 	rmb();
-	gc_addr = get_tx_last_gc_addr();
-	if (gc_addr == get_last_gc_addr() || nr_cleaned > TX_CLEAN_BUDGET)
+	hw_gc_addr = get_hw_gc_addr();
+	sw_gc_addr = get_sw_gc_addr();
+	if (hw_gc_addr == sw_gc_addr || nr_cleaned > TX_CLEAN_BUDGET)
 		goto out;
 
 	nr_cleaned++;
 
 	/* store last seen gc address to let hw know it */
-	set_last_gc_addr(gc_addr);
+	set_sw_gc_addr(hw_gc_addr);
 
-	if (!addr_in_lbuf(tx_kern_desc(), gc_addr)) {
+	if (!addr_in_lbuf(tx_kern_desc(), hw_gc_addr)) {
 		if (nf10_user_callback(adapter, 0))
 			return 1;	/* forcing napi to end */
 
 		/* user is not on, it may be the one for previous tx by user */
-		pr_warn("Warn: non-kernel gc_addr (%p) seen in irq\n",
-			(void *)gc_addr);
+		pr_warn("Warn: non-kernel hw_gc_addr (%p) seen in irq\n",
+			(void *)hw_gc_addr);
 		goto out;
 	}
 
-	cons = ALIGN(gc_addr - desc->dma_addr, 4096);
+	cons = ALIGN(hw_gc_addr - desc->dma_addr, 4096);
 	if (cons == desc->size)
 		cons = 0;
 	set_tx_cons(desc, cons);
@@ -923,8 +931,8 @@ again:
 			netif_wake_queue(adapter->netdev[i]);
 
 	netif_dbg(adapter, tx_done, default_netdev(adapter),
-		  "gctx: gc_addr=%p last=%p cons=%u\n", (void *)gc_addr,
-		  (void *)get_last_gc_addr(), get_tx_cons(desc));
+		  "gctx: gc_addr=(hw:%p,last-sw:%p) cons=%u\n",
+		  (void *)hw_gc_addr, (void *)sw_gc_addr, get_tx_cons(desc));
 
 	/* if still not cleaned for tx, try again to see if more gc needed */
 	if (!tx_clean_completed(desc))
