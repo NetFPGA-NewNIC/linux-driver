@@ -272,6 +272,10 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	{
 		unsigned long ret = 0;
 
+		if (adapter->user_flags) {
+			pr_err("Error: nf10 user stack in use\n");
+			return -EBUSY;
+		}
 		adapter->nr_user_mmap = 0;
 		adapter->user_flags |= UF_IRQ_DISABLED;
 		adapter->user_flags |= (arg & UF_ON_MASK);
