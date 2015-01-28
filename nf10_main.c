@@ -512,10 +512,8 @@ MODULE_DEVICE_TABLE(pci, pci_id);
 pci_ers_result_t nf10_pcie_error(struct pci_dev *pdev, 
 				 enum pci_channel_state state)
 {
-	pr_err("nf10: pcie error is detected: state=%u\n", state);
-
-	return PCI_ERS_RESULT_NONE;
-#if 0	/* reset handler is needed to enable the following */
+	/* XXX: this handler has never tested, since pcie error
+	 * hasn't occured, so it may need to be refined */
 	struct nf10_adapter *adapter = pci_get_drvdata(pdev);
 	int i;
 
@@ -534,7 +532,6 @@ pci_ers_result_t nf10_pcie_error(struct pci_dev *pdev,
 	pci_disable_device(pdev);
 
 	return PCI_ERS_RESULT_NEED_RESET;
-#endif
 }
 
 static struct pci_error_handlers pcie_err_handlers = {
