@@ -162,7 +162,6 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 	netif_dbg(adapter, intr, default_netdev(adapter),
 		  "nf10_poll key=%lx mask=%x flags=%x\n",
 		  wait ? wait->pt_key : -1, mask, adapter->user_flags);
-	//pr_debug("k=%lx m=%x f=%x\n", wait->pt_key, mask, adapter->user_flags);
 	return mask;
 }
 
@@ -382,10 +381,6 @@ int nf10_init_fops(struct nf10_adapter *adapter)
 	       adapter->bar0 + AXI_COMPLETION_READ_ADDR);
 	writeq(adapter->axi_completion_dma_addr + 0x8,
 	       adapter->bar0 + AXI_COMPLETION_WRITE_ADDR);
-
-	pr_debug("%s: alloc axi completion buffer(kern_addr=(R=%p,W=%p), dma_addr=(R=%p,W=%p))\n",
-		__func__, adapter->axi_completion_kern_addr, adapter->axi_completion_kern_addr + 0x8,
-		(void *)adapter->axi_completion_dma_addr, (void *)(adapter->axi_completion_dma_addr + 0x8));
 
 	mutex_init(&axi_mutex);
 

@@ -610,8 +610,6 @@ static void deliver_packet(struct net_device *netdev, void *pkt_addr,
 	if (unlikely(netdev_port_up(netdev) == 0))
 		return;
 
-	//pr_debug("dps: %p l=%u wd=%d\n", pkt_addr, pkt_len, *work_done);
-
 	START_TIMESTAMP(1);
 	skb_copy_to_linear_data(skb, pkt_addr, pkt_len);
 	STOP_TIMESTAMP(1);
@@ -632,8 +630,6 @@ static void deliver_packet(struct net_device *netdev, void *pkt_addr,
 	netdev->stats.rx_bytes += pkt_len;
 	(*work_done)++;
 	(*pskb) = NULL;
-
-	//pr_debug("dpe\n");
 }
 
 static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter, 
@@ -654,12 +650,10 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 		dword_idx = get_rx_cons();
 		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
 		pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
-		//pr_debug("i=%u l=%u\n", dword_idx, pkt_len);
 		if (pkt_len == 0) {
 			/* if this lbuf is closed, move to next lbuf */
 			LBUF_GET_HEADER(buf_addr, lh);
 			if (LBUF_CLOSED(dword_idx, lh)) {
-				//pr_err("1-drop: h=0x%016llx 0x%04x %u\n", lh.qword, lh.nr_drops, lh.nr_drops);
 				move_to_next_lbuf(adapter);
 				continue;
 			}
@@ -703,7 +697,6 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 		next_dword_idx = LBUF_NEXT_DWORD_IDX(dword_idx, pkt_len);
 wait_to_end_recv:
 		next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
-		//pr_debug("ptc: nl=%u ni=%u\n", next_pkt_len, next_dword_idx);
 		if (next_pkt_len > 0) {
 			/* if entire packet has been received, consume it */
 			deliver_packet(netdev, pkt_addr, pkt_len,
@@ -844,8 +837,6 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	cons = get_tx_cons(desc);
 	avail_size = (cons > prod_pvt ? 0 : desc->size) + cons - prod_pvt;
 
-	//pr_debug("%s: prod_pvt=%u cons=%u avail=%u req_size=%u pkt_len=%u\n", __func__,
-	//	 prod_pvt, cons, avail_size, ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE, pkt_len);
 	if (ALIGN(pkt_len, 8) + LBUF_TX_METADATA_SIZE + 4096 > avail_size)
 		goto no_buf_space;
 
