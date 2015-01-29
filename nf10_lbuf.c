@@ -61,6 +61,7 @@ struct lbuf_stats {
 	u64 tx_lbufs;
 	u64 tx_bytes;
 	u32 tx_stops;
+	u64 rx_mac_timeout;
 };
 
 static struct lbuf_info {
@@ -412,6 +413,8 @@ static ssize_t show_lbuf_stat(struct device *dev,
 		stats->tx_lbufs, stats->tx_bytes,
 		stats->tx_lbufs ? stats->tx_bytes / stats->tx_lbufs : 0);
 	sprintf(buf + strlen(buf), "tx_stops=%u\n", stats->tx_stops);
+	sprintf(buf + strlen(buf), "rx_mac_timeout=%llu\n",
+		stats->rx_mac_timeout);
 	for (i = 0; i < CONFIG_NR_PORTS; i++)
 		rx_bytes += info->adapter->netdev[i]->stats.rx_bytes;
 	if (rx_bytes > 0) {
@@ -727,8 +730,10 @@ wait_to_end_recv:
 			 * again to see if it's zero. If so, hw has jumped to
 			 * next 128B-aligned offset */
 			next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
-			if (next_pkt_len == 0)
+			if (next_pkt_len == 0) {
 				next_dword_idx = LBUF_128B_ALIGN(next_dword_idx);
+				lbuf_info.stats.rx_mac_timeout++;
+			}
 			set_rx_cons(next_dword_idx);
 		}
 		/* check if next_dword_idx exceeds lbuf */
