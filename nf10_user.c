@@ -90,12 +90,14 @@ static int nf10_mmap(struct file *f, struct vm_area_struct *vma)
 	unsigned long size;
 	int err = 0;
 	
+	/* page alignment check */
 	if ((vma->vm_start & ~PAGE_MASK) || (vma->vm_end & ~PAGE_MASK)) {
 		netif_err(adapter, drv, default_netdev(adapter),
 			  "not aligned vaddrs (vm_start=%lx vm_end=%lx)", 
 			  vma->vm_start, vma->vm_end);
 		return -EINVAL;
 	}
+	/* mmap requires user_ops->get_pfn */
 	if (!adapter->user_ops->get_pfn)
 		return -EINVAL;
 
@@ -107,12 +109,15 @@ static int nf10_mmap(struct file *f, struct vm_area_struct *vma)
 			  adapter->nr_user_mmap);
 		return -EINVAL;
 	}
+	/* mmap pfn to the requested user virtual address space */
 	err = remap_pfn_range(vma, vma->vm_start, pfn, size, vma->vm_page_prot);
 
 	netif_dbg(adapter, drv, default_netdev(adapter),
 		  "mmapped [%d] err=%d va=%p pfn=%lx size=%lu\n",
 		  adapter->nr_user_mmap, err, (void *)vma->vm_start, pfn, size);
 
+	/* nr_user_mmap is used by user_ops->get_pfn to locate a right kernel
+	 * memory area */
 	if (!err)
 		adapter->nr_user_mmap++;
 
@@ -130,9 +135,10 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 	unsigned int mask = 0;
 
 	spin_lock_bh(&user_lock);
-	/* UF_[RX|TX]_PENDING is set by nf10_user_callback, which is
-	 * called in napi thread. So, irq has been already disabled */
+	/* UF_[RX|TX]_PENDING is set by nf10_user_callback from NAPI poll
+	 * handler with IRQ being disabled */
 	if (wait->pt_key & (POLLIN | POLLRDNORM)) {
+		/* poll requested for rx */
 		poll_wait(f, &adapter->user_rx_wq, wait);
 		if (adapter->user_flags & UF_RX_PENDING) {
 			adapter->user_flags &= ~UF_RX_PENDING;
@@ -140,18 +146,21 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 		}
 	}
 	if (wait->pt_key & (POLLOUT | POLLWRNORM)) {
+		/* poll requested for tx */
 		poll_wait(f, &adapter->user_tx_wq, wait);
 		if (adapter->user_flags & UF_TX_PENDING) {
 			adapter->user_flags &= ~UF_TX_PENDING;
 			mask |= (POLLOUT | POLLWRNORM);
 		}
 	}
-	/* mask == 0 means it will be blocked waiting for events,
-	 * so if irq is disabled, enable again before waiting */
+	/* mask == 0 means it will be sleeping waiting for events,
+	 * so if irq is disabled, enable again before sleeping */
 	if (!mask && (adapter->user_flags & UF_IRQ_DISABLED)) {
 		netif_dbg(adapter, intr, default_netdev(adapter),
 			  "enable irq before sleeping (key=%lx)\n",
 			  wait ? wait->pt_key : -1);
+		/* if poll is requested for tx, it waits for tx buffer
+		 * availability, so needs to sync user gc address */
 		if (wait->pt_key & (POLLOUT | POLLWRNORM))
 			adapter->user_flags |= UF_GC_ADDR_SYNC;
 		adapter->user_flags &= ~UF_IRQ_DISABLED;
@@ -165,52 +174,54 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 	return mask;
 }
 
+/* this threshold is for safety to avoid infinite loop in case AXI interface
+ * does not respond */
 #define AXI_LOOP_THRESHOLD	100000000
 static int write_axi(struct nf10_adapter *adapter, u64 addr_val)
 {
 	volatile u64 *completion = axi_write_completion(adapter);
-	u32 ret;
+	u32 r;
 	unsigned long loop = 0;
 
 	/* init -> write addr & val -> poll stat -> return stat */
 	*completion = 0;
 	wmb();
 	writeq(addr_val, adapter->bar0 + AXI_WRITE_ADDR);
-	while ((ret = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT) {
+	while ((r = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT) {
 		if (++loop >= AXI_LOOP_THRESHOLD) {
-			ret = AXI_COMPLETION_NACK;
+			r = AXI_COMPLETION_NACK;
 			break;
 		}
 	}
 	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "%s: addr=%llx val=%llx ret=%d (loop=%lu)\n",
-		  __func__, addr_val >> 32, addr_val & 0xffffffff, ret, loop);
+		  "%s: addr=%llx val=%llx r=%d (loop=%lu)\n",
+		  __func__, addr_val >> 32, addr_val & 0xffffffff, r, loop);
 
-	return ret;
+	return r;
 }
 
 static int read_axi(struct nf10_adapter *adapter, u64 addr, u64 *val)
 {
 	volatile u64 *completion = axi_read_completion(adapter);
-	u32 ret;
+	u32 r;
 	unsigned long loop = 0;
 
 	/* init -> write addr -> poll stat -> return val & stat */
 	*completion = 0;
 	wmb();
 	writeq(addr, adapter->bar0 + AXI_READ_ADDR);
-	while ((ret = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT) {
+	while ((r = axi_completion_stat(*completion)) == AXI_COMPLETION_WAIT) {
 		if (++loop >= AXI_LOOP_THRESHOLD) {
-			ret = AXI_COMPLETION_NACK;
+			r= AXI_COMPLETION_NACK;
 			break;
 		}
 	}
 	*val = axi_completion_data(*completion);
 	netif_dbg(adapter, drv, default_netdev(adapter),
-		  "%s: addr=%llx val=%llx ret=%d (loop=%lu)\n",
-		  __func__, addr, *val, ret, loop);
+		  "%s: addr=%llx val=%llx r=%d (loop=%lu)\n",
+		  __func__, addr, *val, r, loop);
 
-	return ret;
+	return r;
 }
 
 static int check_axi(int ret)
@@ -239,6 +250,7 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	case NF10_IOCTL_CMD_WRITE_REG_PY:   /* compat w/ OSNT python apps */
 #endif
 	{
+		/* wraxi */
 		u32 ret;
 		u64 addr_val = (u64)arg;
 #ifdef CONFIG_OSNT
@@ -254,6 +266,7 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	}
 	case NF10_IOCTL_CMD_READ_REG:
 	{
+		/* rdaxi */
 		u64 addr, val;
 		u32 ret;
 		if (copy_from_user(&addr, (void __user *)arg, 8)) {
@@ -281,9 +294,10 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 			return -EBUSY;
 		}
 		adapter->nr_user_mmap = 0;
-		adapter->user_flags |= UF_IRQ_DISABLED;
 		adapter->user_flags |= (arg & UF_ON_MASK);
-
+		/* when initialized, IRQ is disabled by default, and enabled
+		 * when exiting or before poll() call sleeps */
+		adapter->user_flags |= UF_IRQ_DISABLED;
 		nf10_disable_irq(adapter);
 		if (adapter->user_ops->init) {
 			ret = adapter->user_ops->init(adapter, arg);
@@ -299,15 +313,15 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	{
 		unsigned long ret = 0;
 
-		adapter->nr_user_mmap = 0;
-		adapter->user_flags &= ~UF_IRQ_DISABLED;
-		adapter->user_flags &= ~UF_ON_MASK;
-
 		if (adapter->user_ops->exit) {
 			ret = adapter->user_ops->exit(adapter, arg);
 			if (copy_to_user((void __user *)arg, &ret, sizeof(u64)))
 				return -EFAULT;
 		}
+		adapter->nr_user_mmap = 0;
+		adapter->user_flags &= ~UF_ON_MASK;
+		/* IRQ is re-enabled with user gc address synced */
+		adapter->user_flags &= ~UF_IRQ_DISABLED;
 		adapter->user_flags |= UF_GC_ADDR_SYNC;
 		nf10_enable_irq(adapter);
 		netif_dbg(adapter, drv, default_netdev(adapter),
@@ -316,6 +330,7 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		break;
 	}
 	case NF10_IOCTL_CMD_PREPARE_RX:
+		/* arg conveys slot index of rx lbuf */
 		if (!adapter->user_ops->prepare_rx_buffer)
 			return -EINVAL;
 		netif_dbg(adapter, drv, default_netdev(adapter),
@@ -324,6 +339,7 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		break;
 	case NF10_IOCTL_CMD_XMIT:
 	{
+		/* arg conveys reference (index) and size of user tx lbuf */
 		ret = adapter->user_ops->start_xmit(adapter, arg);
 		break;
 	}
@@ -352,6 +368,7 @@ int nf10_init_fops(struct nf10_adapter *adapter)
 {
 	int err;
 
+	/* create /dev/NF10_DRV_NAME char device as user-kernel interface */
 	if ((err = alloc_chrdev_region(&devno, 0, 1, NF10_DRV_NAME))) {
 		netif_err(adapter, probe, default_netdev(adapter),
 				"failed to alloc chrdev\n");
@@ -404,6 +421,13 @@ int nf10_remove_fops(struct nf10_adapter *adapter)
 	return 0;
 }
 
+/**
+ * nf10_user_callback - called by NAPI poll loop when a tx or rx event occurs
+ * @adapter: associated adapter structure
+ * @rx: 1 if rx or 0 if tx
+ *
+ * Returns true if a relevant process is initialized, false otherwise
+ **/
 bool nf10_user_callback(struct nf10_adapter *adapter, int rx)
 {
 	u32 user_flags;
@@ -433,6 +457,9 @@ bool nf10_user_callback(struct nf10_adapter *adapter, int rx)
 
 	spin_lock_bh(&user_lock);
 	adapter->user_flags |= user_flags;
+	/* avoid requesting IRQ disabling when any process is waiting in the
+	 * other queue. without this check, the waiting process may never
+	 * wake up. otherwise request NAPI loop to exit with IRQ disabled */
 	if (!waitqueue_active(other_q))
 		adapter->user_flags |= UF_IRQ_DISABLED;
 	wake_up_interruptible_poll(this_q, poll_flags);
