@@ -363,7 +363,6 @@ static int nf10_create_netdev(struct pci_dev *pdev,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,39)
 		netdev->hw_features = netdev->features;
 #endif
-
 		if ((err = register_netdev(netdev))) {
 			free_netdev(netdev);
 			pr_err("failed to register netdev\n");
@@ -411,18 +410,23 @@ static int nf10_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_create_netdev;
 
 	adapter->pdev = pdev;
+	/* this can be updated by 'ethtool -s <iface> msglvl <value>' */
 	adapter->msg_enable = netif_msg_init(debug, DEFAULT_MSG_ENABLE);
+
+	/* map BAR0 address space */
 	if ((adapter->bar0 = pci_iomap(pdev, 0, 0)) == NULL) {
 		err = -EIO;
 		goto err_pci_iomap_bar0;
 	}
 
+	/* map BAR2 address space */
 	if ((adapter->bar2 = pci_iomap(pdev, 2, 0)) == NULL) {
 		err = -EIO;
 		goto err_pci_iomap_bar2;
 	}
 
-	/* 3. init interrupt */
+	/* 3. init interrupt
+	 * currently, NetFPGA-10G only supports MSI */
 	if ((err = pci_enable_msi(pdev))) {
 		pr_err("failed to enable MSI: err=%d\n", err);
 		goto err_enable_msi;
