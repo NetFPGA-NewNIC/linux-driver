@@ -22,12 +22,8 @@
 *        Another interface is user_ops, which is typically used for a user app
 *        to directly control DMA engine via ioctl/mmap. The current user_ops is
 *        merely a minimum set, which helps to prove the DMA performance
-*        precluding kernel overheads. The user_ops is used by DMA-dependent
+*        bypassing kernel overheads. The user_ops is used by DMA-dependent
 *        module like nf10_lbuf.c through nf10_adapter.
-*
-*        TODO: 
-*		Once interrupt control logic is confirmed by DMA core,
-*		irq enable/disable can be done in NAPI-related parts.
 *
 *	 This code is initially developed for the Network-as-a-Service (NaaS) project.
 *	 (under development in https://github.com/NetFPGA-NewNIC/linux-driver)
@@ -66,7 +62,7 @@
 #include "nf10.h"
 #include "nf10_user.h"
 
-u64 nf10_test_dev_addr = 0x000f530dd164;
+u64 nf10_default_dev_addr = 0x000f530dd164;
 
 #define DEFAULT_MSG_ENABLE (NETIF_MSG_DRV|NETIF_MSG_PROBE|NETIF_MSG_LINK|NETIF_MSG_IFDOWN|NETIF_MSG_IFUP|NETIF_MSG_RX_ERR)
 static int debug = -1;
@@ -76,7 +72,7 @@ MODULE_PARM_DESC(debug, "Debug level");
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,12,0)
 static bool reset = true;	/* if need to reset, it is set to true */
 module_param(reset, bool, 0644);
-MODULE_PARM_DESC(reset, "PCIe reset sent");
+MODULE_PARM_DESC(reset, "PCIe reset");
 #endif
 
 /* DMA engine-dependent functions */
@@ -343,7 +339,7 @@ static int nf10_create_netdev(struct pci_dev *pdev,
 		SET_NETDEV_DEV(netdev, &pdev->dev);
 
 		/* assign MAC address */
-		memcpy(netdev->dev_addr, &nf10_test_dev_addr, ETH_ALEN);
+		memcpy(netdev->dev_addr, &nf10_default_dev_addr, ETH_ALEN);
 		netdev->dev_addr[ETH_ALEN - 1] = i;
 
 		/* make cross-link between netdev and adapter */
@@ -516,7 +512,7 @@ MODULE_DEVICE_TABLE(pci, pci_id);
 pci_ers_result_t nf10_pcie_error(struct pci_dev *pdev, 
 				 enum pci_channel_state state)
 {
-	/* XXX: this handler has never tested, since pcie error
+	/* XXX: this handler has never been tested, since pcie error
 	 * hasn't occured, so it may need to be refined */
 	struct nf10_adapter *adapter = pci_get_drvdata(pdev);
 	int i;
@@ -563,5 +559,5 @@ static void __exit nf10_drv_exit(void)
 module_exit(nf10_drv_exit);
 
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_AUTHOR("Cambridge NaaS Team");
-MODULE_DESCRIPTION("Device driver for NetFPGA 10g reference NIC");
+MODULE_AUTHOR("Hwanju Kim");
+MODULE_DESCRIPTION("Device driver for NetFPGA-10G new NIC");
