@@ -250,12 +250,25 @@ static struct net_device_stats *nf10_get_stats(struct net_device *dev)
 	return &dev->stats;
 }
 
+static int nf10_set_mac(struct net_device *netdev, void *p)
+{
+	struct sockaddr *addr = p;
+
+	if (!is_valid_ether_addr(addr->sa_data))
+		return -EADDRNOTAVAIL;
+
+	memcpy(netdev->dev_addr, addr->sa_data, netdev->addr_len);
+
+	return 0;
+}
+
 static const struct net_device_ops nf10_netdev_ops = {
 	.ndo_open		= nf10_up,
 	.ndo_stop		= nf10_down,
 	.ndo_do_ioctl		= nf10_do_ioctl,
 	.ndo_get_stats		= nf10_get_stats,
-	.ndo_start_xmit		= nf10_start_xmit
+	.ndo_start_xmit		= nf10_start_xmit,
+	.ndo_set_mac_address	= nf10_set_mac,
 };
 
 irqreturn_t nf10_interrupt_handler(int irq, void *data)
