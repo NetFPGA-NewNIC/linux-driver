@@ -14,12 +14,8 @@
 *  Description:
 *	 This module provides the implementation of ethtool.
 *	 It began providing only get/set_msglevel for debugging purpose, and
-*	 will be extended while adding some parameter controls and offloading
-*	 features.
-*
-*        TODO: 
-*		- Parameter control to talk with DMA hardware
-*		- Standard offloading control such as gso/gro
+*	 a coalescing feature with rx-usecs.
+*	 It will be extended as needed for additional ethtool features.
 *
 *	 This code is initially developed for the Network-as-a-Service (NaaS) project.
 *	 (under development in https://github.com/NetFPGA-NewNIC/linux-driver)

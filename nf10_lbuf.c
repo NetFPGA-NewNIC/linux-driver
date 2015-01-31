@@ -441,8 +441,8 @@ static void nf10_lbuf_prepare_rx_all(struct nf10_adapter *adapter)
 	for (i = 0; i < NR_SLOT; i++)
 		nf10_lbuf_prepare_rx(adapter, i);
 
-	/* initialize rx_cons to NR_RESERVED_DWORDS, a start point for data */
-	set_rx_cons(NR_RESERVED_DWORDS);
+	/* initialize rx_cons to LBUF_RX_RESERVED_DWORDS, a start point for data */
+	set_rx_cons(LBUF_RX_RESERVED_DWORDS);
 }
 
 static void free_rx_lbufs(struct nf10_adapter *adapter)
@@ -745,18 +745,18 @@ static int nf10_lbuf_napi_budget(void)
  * This function prepares the current closed lbuf and increment rx lbuf slot
  * index. In deliver_packet, all the consumed area had been zeroed, so just
  * need to initialize lbuf header before preparation. rx_cons is initialized
- * to NR_RESERVED_DWORDS, the start point for packet data.
+ * to LBUF_RX_RESERVED_DWORDS, the start point for packet data.
  **/
 static void move_to_next_lbuf(struct nf10_adapter *adapter)
 {
 	netif_dbg(adapter, rx_status, default_netdev(adapter),
 		  "%s: rx_idx=%u\n", __func__, rx_idx());
 
-	LBUF_INIT_HEADER(cur_rx_desc()->kern_addr);
+	LBUF_RX_INIT_HEADER(cur_rx_desc()->kern_addr);
 	wmb();
 	nf10_lbuf_prepare_rx(adapter, (unsigned long)rx_idx());
 	inc_rx_idx();
-	set_rx_cons(NR_RESERVED_DWORDS);
+	set_rx_cons(LBUF_RX_RESERVED_DWORDS);
 }
 
 /**
@@ -835,7 +835,7 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 		/* rx cons pointer is maintained in dword unit */
 		dword_idx = get_rx_cons();
 		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
-		pkt_len = LBUF_PKT_LEN(buf_addr, dword_idx);
+		pkt_len = LBUF_RX_PKT_LEN(buf_addr, dword_idx);
 
 		/* if the current packet length is zero, two cases are possible:
 		 * 1) no more packet has arrived
@@ -843,8 +843,8 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 		 */
 		if (pkt_len == 0) {
 			/* if this lbuf is closed, move to next lbuf */
-			LBUF_GET_HEADER(buf_addr, lh);
-			if (LBUF_CLOSED(dword_idx, lh)) {
+			LBUF_RX_GET_HEADER(buf_addr, lh);
+			if (LBUF_RX_CLOSED(dword_idx, lh)) {
 				move_to_next_lbuf(adapter);
 				continue;
 			}
@@ -891,12 +891,12 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 				break;
 			}
 		}
-		pkt_addr = LBUF_PKT_ADDR(buf_addr, dword_idx);
-		next_dword_idx = LBUF_NEXT_DWORD_IDX(dword_idx, pkt_len);
+		pkt_addr = LBUF_RX_PKT_ADDR(buf_addr, dword_idx);
+		next_dword_idx = LBUF_RX_NEXT_DWORD_IDX(dword_idx, pkt_len);
 wait_to_end_recv:
 		/* lbuf rx engine uses the value of the length of next packet
 		 * to determine if the current packet is completely received */
-		next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
+		next_pkt_len = LBUF_RX_PKT_LEN(buf_addr, next_dword_idx);
 		if (next_pkt_len > 0) {
 			/* if next packet length is non-zero, the current packet
 			 * is received entirely, so deliver this to kernel */
@@ -910,14 +910,15 @@ wait_to_end_recv:
 			 * 2) this lbuf is closed due to insufficient space
 			 * 3) MAC timeout occurs, so DMA jumped to 128B-aligned
 			 */
-			LBUF_GET_HEADER(buf_addr, lh);
+			LBUF_RX_GET_HEADER(buf_addr, lh);
 			/* lazy update: rx_dropped is eventually accurate */
 			netdev->stats.rx_dropped = lh.nr_drops;
 
 			/* using nr_qwords in lbuf header to know if 1) is true
 			 * if nr_qwords < next qword index, 1) is met,
-			 * so keep waiting for the current packet */ 
-			if ((lh.nr_qwords << 1) < next_dword_idx - NR_RESERVED_DWORDS)
+			 * so keep waiting for the current packet */
+			if ((lh.nr_qwords << 1) <
+			    next_dword_idx - LBUF_RX_RESERVED_DWORDS)
 				goto wait_to_end_recv;
 
 			/* if nr_qwords >= next qword index
@@ -926,7 +927,7 @@ wait_to_end_recv:
 				       &skb, work_done);
 
 			/* check if the lbuf is closed -> 2) is true */
-			if (LBUF_CLOSED(next_dword_idx, lh)) {
+			if (LBUF_RX_CLOSED(next_dword_idx, lh)) {
 				move_to_next_lbuf(adapter);
 				continue;
 			}
@@ -934,11 +935,11 @@ wait_to_end_recv:
 			 * packet length may become non-zero, which means
 			 * a following packet triggers MAC time out. So, before
 			 * asserting MAC timeout occurance, check again */
-			next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
+			next_pkt_len = LBUF_RX_PKT_LEN(buf_addr, next_dword_idx);
 			if (next_pkt_len == 0) {
 				/* MAC timeout, DMA has jumped to 128-aligned
 				 * address for the next packet */
-				next_dword_idx = LBUF_128B_ALIGN(next_dword_idx);
+				next_dword_idx = LBUF_RX_128B_ALIGN(next_dword_idx);
 				lbuf_info.stats.rx_mac_timeout++;
 			}
 			set_rx_cons(next_dword_idx);
@@ -1041,7 +1042,7 @@ static unsigned long __copy_skb_to_lbuf(struct desc *desc, void *buf_addr,
 
 	/* to take advantage of GSO, we faked SG and now emulate SG by copying
 	 * from scattered buffers to lbuf */
-	buf_addr = LBUF_CUR_TX_ADDR(buf_addr, port_num, skb->len);
+	buf_addr = LBUF_TX_CUR_ADDR(buf_addr, port_num, skb->len);
 	skb_copy_from_linear_data(skb, buf_addr, skb_headlen(skb));
 	p = buf_addr + skb_headlen(skb);
 	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
@@ -1053,7 +1054,7 @@ static unsigned long __copy_skb_to_lbuf(struct desc *desc, void *buf_addr,
 #endif
 		p += frag->size;
 	}
-	buf_addr = LBUF_NEXT_TX_ADDR(buf_addr, skb->len);
+	buf_addr = LBUF_TX_NEXT_ADDR(buf_addr, skb->len);
 	return buf_addr - desc->kern_addr;	/* updated prod_pvt */
 }
 
@@ -1092,7 +1093,7 @@ static int copy_skb_to_lbuf(struct net_device *netdev,
 	/* check if space is available, if not, returned with EBUSY,
 	 * irq handler calls lbuf_xmit, which takes care of wrap-around, and
 	 * wakes up netdev's tx queue to retry this copy */
-	if (!LBUF_HAS_TX_ROOM(desc->size, prod_pvt, pkt_len))
+	if (!LBUF_TX_HAS_ROOM(desc->size, prod_pvt, pkt_len))
 		goto no_buf_space;
 
 	/* check to safely produce packet by examining cons */

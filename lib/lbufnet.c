@@ -241,7 +241,7 @@ int lbufnet_init(struct lbufnet_conf *conf)
 		dprintf("RX lbuf[%d] is mmaped to vaddr=%p w/ size=%lu\n",
 		      i, rx_lbuf[i], LBUF_RX_SIZE);
 	}
-	LBUF_GET_HEADER(rx_lbuf[ld->rx_idx], lh);
+	LBUF_RX_GET_HEADER(rx_lbuf[ld->rx_idx], lh);
 	prev_nr_drops = lh.nr_drops;
 
 	/* 4th mmap is for TX buffers exclusively used by user (but allocated by kernel) */
@@ -339,10 +339,10 @@ int lbufnet_register_exit_callback(lbufnet_exit_cb cb)
 
 static inline void move_to_next_lbuf(void *buf_addr)
 {
-	LBUF_INIT_HEADER(buf_addr);
+	LBUF_RX_INIT_HEADER(buf_addr);
 	prepare_rx_lbuf();
 	inc_idx(ld->rx_idx);
-	ld->rx_cons = NR_RESERVED_DWORDS;
+	ld->rx_cons = LBUF_RX_RESERVED_DWORDS;
 }
 
 static inline void deliver_packet(struct lbufnet_rx_packet *pkt, uint64_t *rx_packets)
@@ -390,13 +390,13 @@ wait_rx:
 		dword_idx = ld->rx_cons;
 		buf_addr = rx_lbuf[ld->rx_idx];
 		pkt.port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
-		pkt.len = LBUF_PKT_LEN(buf_addr, dword_idx);
-		pkt.timestamp = LBUF_TIMESTAMP(buf_addr, dword_idx);
+		pkt.len = LBUF_RX_PKT_LEN(buf_addr, dword_idx);
+		pkt.timestamp = LBUF_RX_TIMESTAMP(buf_addr, dword_idx);
 
 		if (unlikely(pkt.len == 0)) {
 			/* if this lbuf is closed, move to next lbuf */
-			LBUF_GET_HEADER(buf_addr, lh);
-			if (LBUF_CLOSED(dword_idx, lh)) {
+			LBUF_RX_GET_HEADER(buf_addr, lh);
+			if (LBUF_RX_CLOSED(dword_idx, lh)) {
 				move_to_next_lbuf(buf_addr);
 				continue;
 			}
@@ -409,28 +409,28 @@ wait_rx:
 				ld->rx_idx, pkt.len);
 			break;
 		}
-		next_dword_idx = LBUF_NEXT_DWORD_IDX(dword_idx, pkt.len);
-		pkt.data = LBUF_PKT_ADDR(buf_addr, dword_idx);
+		next_dword_idx = LBUF_RX_NEXT_DWORD_IDX(dword_idx, pkt.len);
+		pkt.data = LBUF_RX_PKT_ADDR(buf_addr, dword_idx);
 wait_to_end_recv:
-		next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
+		next_pkt_len = LBUF_RX_PKT_LEN(buf_addr, next_dword_idx);
 		if (next_pkt_len > 0) {
 			deliver_packet(&pkt, &rx_packets);
 			ld->rx_cons = next_dword_idx;
 		}
 		else {
-			LBUF_GET_HEADER(buf_addr, lh);
-			if ((lh.nr_qwords << 1) < next_dword_idx - NR_RESERVED_DWORDS) {
+			LBUF_RX_GET_HEADER(buf_addr, lh);
+			if ((lh.nr_qwords << 1) < next_dword_idx - LBUF_RX_RESERVED_DWORDS) {
 				lbufnet_stat.nr_polls++;
 				goto wait_to_end_recv;
 			}
 			deliver_packet(&pkt, &rx_packets);
-			if (unlikely(LBUF_CLOSED(next_dword_idx, lh))) {
+			if (unlikely(LBUF_RX_CLOSED(next_dword_idx, lh))) {
 				move_to_next_lbuf(buf_addr);
 				continue;
 			}
-			next_pkt_len = LBUF_PKT_LEN(buf_addr, next_dword_idx);
+			next_pkt_len = LBUF_RX_PKT_LEN(buf_addr, next_dword_idx);
 			if (next_pkt_len == 0)
-				next_dword_idx = LBUF_128B_ALIGN(next_dword_idx);
+				next_dword_idx = LBUF_RX_128B_ALIGN(next_dword_idx);
 			ld->rx_cons = next_dword_idx;
 		}
 		if (unlikely(ld->rx_cons >= (LBUF_RX_SIZE >> 2)))
@@ -524,15 +524,15 @@ avail_check:
 			} while (n <= 0 || pfd.revents & POLLERR);
 		}
 	}
-	if (unlikely(!LBUF_HAS_TX_ROOM(tx_lbuf_size, tx_offset, len))) {
+	if (unlikely(!LBUF_TX_HAS_ROOM(tx_lbuf_size, tx_offset, len))) {
 		lbufnet_flush(sync_flags);
 		goto avail_check;
 	}
 	/* now tx lbuf avaialable */
 	buf_addr = tx_lbuf[tx_prod] + tx_offset;
-	buf_addr = LBUF_CUR_TX_ADDR(buf_addr, port_num, len);
+	buf_addr = LBUF_TX_CUR_ADDR(buf_addr, port_num, len);
 	memcpy(buf_addr, data, len);
-	tx_offset = LBUF_NEXT_TX_ADDR(buf_addr, len) - tx_lbuf[tx_prod];
+	tx_offset = LBUF_TX_NEXT_ADDR(buf_addr, len) - tx_lbuf[tx_prod];
 
 	return tx_offset;
 }
