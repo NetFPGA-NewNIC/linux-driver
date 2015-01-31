@@ -42,30 +42,8 @@
 #ifndef _NF10_LBUF_H
 #define _NF10_LBUF_H
 
-#include <linux/types.h>
-#include <linux/pci.h>
-#include <linux/list.h>
 #include "nf10.h"
 
 struct nf10_adapter;
 extern void nf10_lbuf_set_hw_ops(struct nf10_adapter *adapter);
-
-struct desc {
-	void			*kern_addr;
-	dma_addr_t		dma_addr;
-	u32			size;
-	unsigned int		tx_prod;
-	unsigned int		tx_prod_pvt;
-	unsigned int		tx_cons;
-	spinlock_t		lock;
-};
-/* 
- * kernel buffers: kernel uses pre-allocated dma-coherent tx and rx buffers.
- * The size of tx buffer could be configured at compile time, but
- * the size of rx buffer is currently fixed to 2MB by DMA hardware.
- * The information of rx buffers are defined in nf10_lbuf_api.h, since
- * the kernel buffers are directly used by user-level library via mmap().
- */
-#define LBUF_TX_ORDER	10	/* default 4MB */
-#define LBUF_TX_SIZE	(1UL << (PAGE_SHIFT + LBUF_TX_ORDER))
 #endif
