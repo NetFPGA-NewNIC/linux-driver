@@ -49,6 +49,9 @@
 #define NR_SLOT		2
 #define inc_idx(idx)	\
 	do { idx = idx == NR_SLOT - 1 ? 0 : idx + 1; } while(0)
+/* rx lbuf size is currently dependent on lbuf DMA engine (2MB) */
+#define LBUF_RX_ORDER	9	/* 512 pages = 2MB */
+#define LBUF_RX_SIZE	(1UL << (PAGE_SHIFT + LBUF_RX_ORDER))
 
 #define MIN_TX_USER_LBUF	4
 #define MAX_TX_USER_LBUF	32
@@ -59,8 +62,6 @@
 #define PAGE_SHIFT	12
 #define PAGE_SIZE	(1 << PAGE_SHIFT)
 #endif
-#define LBUF_RX_ORDER	9	/* default 2MB */
-#define LBUF_RX_SIZE	(1UL << (PAGE_SHIFT + LBUF_RX_ORDER))
 
 #define LBUF_NR_PORTS	4	/* only used for sanity check: should be the same as # of physical ports */
 
@@ -89,6 +90,45 @@ struct lbuf_user {
 	unsigned long long last_gc_addr;	/* user gc address */
 };
 
+/**
+ * RX lbuf layout
+ *
+ *                    DWORD (32b, 4B)
+ *                  +------------------+
+ *                0 |     HEADER 1     | =  nr_qwords (32b)
+ *                  +------------------+    +-----------+-----------------------+-----------+-------------+
+ *                1 |     HEADER 2     | =  | unused(8b)|     nr_drop (16b)     | unused(7b)|is_closed(1b)|
+ *                  +------------------+    +-----------+-----------------------+-----------+-------------+
+ *                  |                  |
+ *                  |       ...        |   
+ *               31 |     RESERVED     |
+ *                  +------------------+ <- see LBUF_RX_RESERVED_DWORDS
+ *               32 |     METADATA1    | =  encoded port number (see LBUF_PKT_PORT_NUM)
+ *                  +------------------+
+ *               33 |       LEN1       | =  actual data length
+ *                  +------------------+ <- if CONFIG_NO_TIMESTAMP=n, 8B timestamp is additionally placed here after LEN
+ *               34 |       DATA1      |
+ *                  |        ...       |
+ *                  |                  |
+ *                  +------------------+ -> QWORD(64bit, 8B)-aligned, but if MAC timeout occurs, this should be 128B-aligned
+ * ALIGN(34+LEN1,8) |     METADATA2    |
+ *                  +------------------+
+ *                  |       LEN2       |
+ *                  +------------------+
+ *                  |       DATA2      |
+ **/
+union lbuf_header {
+	struct {
+		/* HEADER 1 */
+		unsigned nr_qwords:32;	/* HEADER 1 */
+		/* HEADER 2 */
+		unsigned is_closed:1;
+		unsigned unused2:7;
+		unsigned nr_drops:16;
+		unsigned unused1:8;
+	};
+	unsigned long long qword;
+};
 #define LBUF_RX_RESERVED_DWORDS		32
 #define LBUF_RX_METADATA(buf_addr, dword_idx)	DWORD_GET_ONCE(buf_addr, dword_idx)
 #define LBUF_RX_PKT_LEN(buf_addr, dword_idx)	DWORD_GET_ONCE(buf_addr, dword_idx + 1)
@@ -100,26 +140,37 @@ struct lbuf_user {
 #define LBUF_RX_PKT_OFFSET	4
 #endif
 #define LBUF_RX_PKT_ADDR(buf_addr, dword_idx)	(void *)&((unsigned int *)buf_addr)[dword_idx+LBUF_RX_PKT_OFFSET]
+/* assert both dword_idx and LBUF_RX_PKT_OFFSET are all QWORD-aligned, so ALIGN(pkt_len, 8) is enough */
 #define LBUF_RX_NEXT_DWORD_IDX(dword_idx, pkt_len)     (dword_idx + LBUF_RX_PKT_OFFSET + (ALIGN(pkt_len, 8) >> 2))
-union lbuf_header {
-	struct {
-		unsigned nr_qwords:32;
-		unsigned is_closed:1;
-		unsigned unused2:7;
-		unsigned nr_drops:16;
-		unsigned unused1:8;
-	};
-	unsigned long long qword;
-};
 #define LBUF_RX_INIT_HEADER(buf_addr)		do { QWORD_GET_ONCE(buf_addr, 0) = 0; } while(0)
 #define LBUF_RX_GET_HEADER(buf_addr, lh)	do { lh.qword = QWORD_GET_ONCE(buf_addr, 0); } while(0)
 #define LBUF_RX_CLOSED(dword_idx, lh)	\
 	(lh.is_closed && (lh.nr_qwords << 1) == dword_idx - LBUF_RX_RESERVED_DWORDS)
 #define LBUF_RX_128B_ALIGN(dword_idx)	ALIGN(dword_idx, 32)
 
-
-/* Tx */
-#define LBUF_TX_METADATA_SIZE	8
+/**
+ * TX lbuf layout
+ *
+ *                    DWORD (32b, 4B)
+ *                  +------------------+
+ *                0 |     METADATA1    | =  encoded port number (see LBUF_PKT_PORT_NUM)
+ *                  +------------------+
+ *                1 |       LEN1       | =  actual data length
+ *                  +------------------+
+ *                2 |       DATA1      |
+ *                  |        ...       |
+ *                  |                  |
+ *                  +------------------+ -> QWORD(64bit, 8B)-aligned
+ *  ALIGN(2+LEN1,8) |     METADATA2    |
+ *                  +------------------+
+ *                  |       LEN2       |
+ *                  +------------------+
+ *                  |       DATA2      |
+ **/
+#define LBUF_TX_METADATA_SIZE	8	/* in bytes: METADATA+LEN */
+/* LBUF_TX_CUR_ADDR does two things:
+ * 1) write port_num and pkt_len to the header
+ * 2) move buf_addr to the address of data */
 #define LBUF_TX_CUR_ADDR(buf_addr, port_num, pkt_len)		\
 ({								\
 	((unsigned int *)buf_addr)[0] = LBUF_ENCODE_PORT_NUM(port_num);	\
