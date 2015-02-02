@@ -52,6 +52,18 @@ uint32_t len = 1 << 10;
 uint64_t count = 1000000;
 uint32_t sync_flags = SF_BLOCK;
 
+static void show_usage(char *cmd)
+{
+	fprintf(stderr,
+		"Usage: %s args\n"
+		"\t-h: show this usage\n"
+		"\t-n <# of packets>\n"
+		"\t-l <packet length in byte>\n"
+		"\t-f <sync flag: 0=non-block, 1=block, 2=busy-wait>\n"
+		"\t-p: if specified, pci direct access w/o ioctl\n",
+		cmd);
+}
+
 void show_stat(struct lbufnet_stat *s)
 {
 	struct timeval elapsed_tv;
@@ -72,8 +84,11 @@ int main(int argc, char *argv[])
 	struct lbufnet_tx_packet pkt;
 	DEFINE_LBUFNET_CONF(conf);
 
-	while ((opt = getopt(argc, argv, "n:l:b:B:f:p")) != -1) {
+	while ((opt = getopt(argc, argv, "hn:l:f:p")) != -1) {
 		switch(opt) {
+		case 'h':
+			show_usage(argv[0]);
+			return -1;
 		case 'n':
 			count = atol(optarg);
 			break;
@@ -105,6 +120,11 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "Error: failed to initialize lbufnet\n");
 		return -1;
 	}
+	printf("Data transmission: count=%lu length=%uB\n", count, len);
+	printf("\tlbufnet: sync_flags=%d(%s) pci_access=%s\n",
+		sync_flags, lbufnet_sync_flag_names[sync_flags],
+		conf.pci_direct_access ? "direct" : "ioctl");
+
 	lbufnet_register_exit_callback(show_stat);
 
 	gettimeofday(&start_tv, NULL);

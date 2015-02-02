@@ -37,6 +37,9 @@
 *
 */
 
+#ifndef LBUFNET_H
+#define LBUFNET_H
+
 #define RX_ON	0x1
 #define TX_ON	0x2
 
@@ -66,6 +69,12 @@ enum {
 	SF_BUSY_BLOCK,
 };
 
+char *lbufnet_sync_flag_names[] = {
+	[SF_NON_BLOCK] = "non-block",
+	[SF_BLOCK] = "block",
+	[SF_BUSY_BLOCK] = "busy-block",
+};
+
 struct lbufnet_tx_packet {
 	void *data;
 	unsigned int len;
@@ -91,3 +100,5 @@ int lbufnet_input(unsigned long nr_packets, int sync_flags);
 int lbufnet_flush(int sync_flags);
 int lbufnet_write(struct lbufnet_tx_packet *pkt);
 int lbufnet_output(struct lbufnet_tx_packet *pkt);
+
+#endif	/* LBUFNET_H */
