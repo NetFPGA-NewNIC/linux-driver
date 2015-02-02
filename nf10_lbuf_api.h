@@ -120,7 +120,7 @@ struct lbuf_user {
 union lbuf_header {
 	struct {
 		/* HEADER 1 */
-		unsigned nr_qwords:32;	/* HEADER 1 */
+		unsigned nr_qwords:32;
 		/* HEADER 2 */
 		unsigned is_closed:1;
 		unsigned unused2:7;
