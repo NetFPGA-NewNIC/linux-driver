@@ -59,6 +59,16 @@
 unsigned long total_rx_packets, total_rx_bytes;
 struct timeval start_tv, end_tv;
 
+static void show_usage(char *cmd)
+{
+	fprintf(stderr,
+		"Usage: %s args\n"
+		"\t-h: show this usage\n"
+		"\t-f <sync flag: 0=non-block, 1=block, 2=busy-wait>\n"
+		"\t-p: if specified, pci direct access w/o ioctl\n",
+		cmd);
+}
+
 void show_stat(struct lbufnet_stat *s)
 {
 	struct timeval elapsed_tv;
@@ -93,20 +103,27 @@ int input_handler(struct lbufnet_rx_packet *pkt)
 
 int main(int argc, char *argv[])
 {
-	int sync_flag = SF_BLOCK;
+	int sync_flags = SF_BLOCK;
 	int opt;
 	DEFINE_LBUFNET_CONF(conf);
 
-	while ((opt = getopt(argc, argv, "f:p")) != -1) {
+	while ((opt = getopt(argc, argv, "hf:p")) != -1) {
 		switch(opt) {
+		case 'h':
+			show_usage(argv[0]);
+			return -1;
 		case 'f':
-			sync_flag = atoi(optarg);
+			sync_flags = atoi(optarg);
 			break;
 		case 'p':
 			conf.pci_direct_access = 1;
 			break;
 		}
 	}
+	printf("Receiving from nf10 ports...\n");
+	printf("\tlbufnet: sync_flags=%d(%s) pci_access=%s\n",
+		sync_flags, lbufnet_sync_flag_names[sync_flags],
+		conf.pci_direct_access ? "direct" : "ioctl");
 	conf.flags = RX_ON;	/* rx only */
 	if (lbufnet_init(&conf)) {
 		fprintf(stderr, "Error: failed to initialize lbufnet\n");
@@ -114,7 +131,7 @@ int main(int argc, char *argv[])
 	}
 	lbufnet_register_input_callback(input_handler);
 	lbufnet_register_exit_callback(show_stat);
-	lbufnet_input(LBUFNET_INPUT_FOREVER, sync_flag);
+	lbufnet_input(LBUFNET_INPUT_FOREVER, sync_flags);
 
 	return 0;
 }

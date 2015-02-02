@@ -52,7 +52,7 @@
 
 #include "lbufnet.h"
 
-#define UDPDEFPORT		5001
+#define UDPDEFPORT		50001
 #define MAX_PAYLOAD_SIZE	2048
 struct packet {
 	struct ether_header ethhdr;
@@ -85,6 +85,26 @@ struct packet_info pinfo = {
 	.count = 1,
 	.sync_flags = SF_BLOCK,
 };
+
+static void show_usage(char *cmd)
+{
+	fprintf(stderr,
+		"Usage: %s args\n"
+		"\t-h: show this usage\n"
+		"\t-s <source IP address>\n"
+		"\t-d <destination IP address>\n"
+		"\t-S <source MAC address>\n"
+		"\t-D <destination MAC address>\n"
+		"\t-n <# of packets>\n"
+		"\t-l <packet length in byte>\n"
+		"\t-r <tx buffer ring count (= tx lbuf count)>\n"
+		"\t-b <tx lbuf size in byte>\n"
+		"\t-B <tx batch size in byte>\n"
+		"\t-f <sync flag: 0=non-block, 1=block, 2=busy-wait>\n"
+		"\t-p: if specified, pci direct access w/o ioctl\n"
+		"\t-P <# of ports: if > 1, tx on multiple ports in a round-robin manner>\n",
+		cmd);
+}
 
 /* wrapsum & checksum are taken from pkt-gen.c in netmap */
 static uint16_t wrapsum(uint32_t sum)
@@ -185,8 +205,11 @@ int main(int argc, char *argv[])
 	struct lbufnet_tx_packet pkt;
 	DEFINE_LBUFNET_CONF(conf);
 
-	while ((opt = getopt(argc, argv, "s:d:S:D:n:l:b:B:f:pP:")) != -1) {
+	while ((opt = getopt(argc, argv, "hs:d:S:D:n:l:b:B:r:P:f:p")) != -1) {
 		switch(opt) {
+		case 'h':
+			show_usage(argv[0]);
+			return -1;
 		case 's':
 			pinfo.src_ip = optarg;
 			break;
@@ -205,20 +228,23 @@ int main(int argc, char *argv[])
 		case 'l':
 			pinfo.len = atoi(optarg);
 			break;
+		case 'r':
+			conf.tx_lbuf_count = atoi(optarg);
+			break;
 		case 'b':
 			pinfo.buflen = atoi(optarg);
 			break;
 		case 'B':
 			pinfo.batchlen = atoi(optarg);
 			break;
+		case 'P':
+			nr_ports = atoi(optarg);
+			break;
 		case 'f':
 			pinfo.sync_flags = atoi(optarg);
 			break;
 		case 'p':
 			conf.pci_direct_access = 1;
-			break;
-		case 'P':
-			nr_ports = atoi(optarg);
 			break;
 		}
 	}
@@ -231,6 +257,15 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "Error: failed to initialize lbufnet\n");
 		return -1;
 	}
+	printf("Packet transmission from src=%s:%u(%s) to dst=%s:%u(%s)\n",
+		pinfo.src_ip, UDPDEFPORT, pinfo.src_mac,
+		pinfo.dst_ip, UDPDEFPORT, pinfo.dst_mac);
+	printf("\tcount=%lu length=%uB tx_lbuf_count=%u tx_lbuf_size=%uB batch_size=%uB\n",
+		pinfo.count, pinfo.len, conf.tx_lbuf_count, conf.tx_lbuf_size, pinfo.batchlen);
+	printf("\tlbufnet: sync_flags=%d(%s) pci_access=%s\n",
+		pinfo.sync_flags, lbufnet_sync_flag_names[pinfo.sync_flags],
+		conf.pci_direct_access ? "direct" : "ioctl");
+
 	init_packet(&pinfo);
 
 	pkt.data = &pinfo.pkt_data;

@@ -157,7 +157,61 @@ static char *get_pci_filename(void)
 	return NULL;
 }
 
-int lbufnet_exit(void);
+static inline int addr_in_lbuf(unsigned int idx, uint64_t gc_addr)
+{
+	return gc_addr > ld->tx_dma_addr[idx] &&
+		gc_addr <= ld->tx_dma_addr[idx] + tx_lbuf_size;
+}
+
+static void clean_tx(void)
+{
+	int last = 0;
+	uint64_t gc_addr = LBUF_GC_ADDR(tx_completion);
+	if (gc_addr == ld->last_gc_addr)
+		return;
+	do {
+		last = addr_in_lbuf(tx_cons, gc_addr);
+		dprintf("%s: tx_cons=%d tx_prod=%d by gc_addr %p (last=%d)\n",
+		      __func__, tx_cons, tx_prod, (void *)gc_addr, last);
+		inc_tx_pointer(tx_cons);
+	} while (!last && tx_cons != tx_prod);
+	ld->last_gc_addr = gc_addr;
+}
+
+int lbufnet_exit(void)
+{
+	unsigned int i;
+
+	/* waiting for draining all transmitted packets */
+	dprintf("tx purging start: empty=%d last_gc=%llx\n", tx_empty(), ld->last_gc_addr);
+	while(!tx_empty())
+		clean_tx();
+	dprintf("tx purging done\n");
+
+	if (pci_base_addr)
+		munmap(pci_base_addr, PAGE_SIZE);
+	if (tx_lbuf_size)
+		for (i = 0; i < tx_lbuf_count; i++)
+			if (tx_lbuf[i])
+				munmap(tx_lbuf[i], tx_lbuf_size);
+	for (i = 0; i < NR_SLOT; i++)
+		if (rx_lbuf[i])
+			munmap(rx_lbuf[i], LBUF_RX_SIZE);
+	if (tx_completion)
+		munmap(tx_completion, PAGE_SIZE);
+	if (ld)
+		munmap(ld, PAGE_SIZE);
+
+	if (ioctl(fd, NF10_IOCTL_CMD_EXIT)) {
+		perror("ioctl init");
+		return -1;
+	}
+	close(fd);
+
+	initialized = 0;
+	return 0;
+}
+
 static void lbufnet_finish(int sig)
 {
 	(void)sig;
@@ -167,11 +221,6 @@ static void lbufnet_finish(int sig)
 		exit_cb(&lbufnet_stat);
 	}
 	exit(0);
-}
-
-static inline int addr_in_lbuf(unsigned int idx, uint64_t gc_addr)
-{
-	return gc_addr > ld->tx_dma_addr[idx] && gc_addr <= ld->tx_dma_addr[idx] + tx_lbuf_size;
 }
 
 int lbufnet_init(struct lbufnet_conf *conf)
@@ -203,6 +252,7 @@ int lbufnet_init(struct lbufnet_conf *conf)
 		return -1;
 	}
 	if (ioctl(fd, NF10_IOCTL_CMD_INIT, flags)) {
+		close(fd);
 		perror("ioctl init");
 		return -1;
 	}
@@ -213,7 +263,7 @@ int lbufnet_init(struct lbufnet_conf *conf)
 	ld = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (ld == MAP_FAILED) {
 		perror("mmap");
-		return -1;
+		goto err_init;
 	}
 	dprintf("DMA metadata is mmaped to vaddr=%p\n", ld);
 	dprintf("\ttx_idx=%u rx_idx=%u\n", ld->tx_idx, ld->rx_idx);
@@ -230,7 +280,7 @@ int lbufnet_init(struct lbufnet_conf *conf)
 	tx_completion = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (tx_completion == MAP_FAILED) {
 		perror("mmap");
-		return -1;
+		goto err_init;
 	}
 	dprintf("DMA tx completion area is mmaped to vaddr=%p\n", tx_completion);
 	for (i = 0; i < NR_SLOT; i++)
@@ -250,7 +300,7 @@ int lbufnet_init(struct lbufnet_conf *conf)
 		rx_lbuf[i] = mmap(NULL, LBUF_RX_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 		if (rx_lbuf[i] == MAP_FAILED) {
 			perror("mmap");
-			return -1;
+			goto err_init;
 		}
 		dprintf("RX lbuf[%d] is mmaped to vaddr=%p w/ size=%lu\n",
 		      i, rx_lbuf[i], LBUF_RX_SIZE);
@@ -264,7 +314,7 @@ int lbufnet_init(struct lbufnet_conf *conf)
 			tx_lbuf[i] = mmap(NULL, tx_lbuf_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 			if (tx_lbuf[i] == MAP_FAILED) {
 				perror("mmap");
-				return -1;
+				goto err_init;
 			}
 			dprintf("TX lbuf[%d] is mmaped to vaddr=%p w/ size=%u (dma_addr=%p)\n",
 					i, tx_lbuf[i], tx_lbuf_size, (void *)ld->tx_dma_addr[i]);
@@ -275,18 +325,18 @@ int lbufnet_init(struct lbufnet_conf *conf)
 		char *fn = get_pci_filename();
 		if (!fn) {
 			eprintf("failed to get pci file name from sysfs\n");
-			return -1;
+			goto err_init;
 		}
 		if ((pcifd = open(fn, O_RDWR, 0755)) < 0) {
 			free(fn);
 			perror("open");
-			return -1;
+			goto err_init;
 		}
 		free(fn);
 		pci_base_addr = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, pcifd, 0);
 		if (pci_base_addr == MAP_FAILED) {
 			perror("mmap");
-			return -1;
+			goto err_init;
 		}
 		xmit_packet = xmit_packet_pci;
 		prepare_rx_lbuf = prepare_rx_lbuf_pci;
@@ -302,39 +352,10 @@ int lbufnet_init(struct lbufnet_conf *conf)
 	signal(SIGINT, lbufnet_finish);	/* XXX: needed? or adding more signals */
 
 	return 0;
-}
 
-static void clean_tx(void)
-{
-	int last = 0;
-	uint64_t gc_addr = LBUF_GC_ADDR(tx_completion);
-	if (gc_addr == ld->last_gc_addr)
-		return;
-	do {
-		last = addr_in_lbuf(tx_cons, gc_addr);
-		dprintf("%s: tx_cons=%d tx_prod=%d by gc_addr %p (last=%d)\n",
-		      __func__, tx_cons, tx_prod, (void *)gc_addr, last);
-		inc_tx_pointer(tx_cons);
-	} while (!last && tx_cons != tx_prod);
-	ld->last_gc_addr = gc_addr;
-}
-
-int lbufnet_exit(void)
-{
-	if (!initialized)
-		return -1;
-
-	dprintf("start tx purging: empty=%d last_gc=%llx\n", tx_empty(), ld->last_gc_addr);
-	/* waiting for draining all transmitted packets */
-	while(!tx_empty())
-		clean_tx();
-	dprintf("stop tx purging\n");
-
-	if (ioctl(fd, NF10_IOCTL_CMD_EXIT)) {
-		perror("ioctl init");
-		return -1;
-	}
-	return 0;
+err_init:
+	lbufnet_exit();
+	return -1;
 }
 
 int lbufnet_register_input_callback(lbufnet_input_cb cb)

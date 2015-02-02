@@ -88,6 +88,25 @@ struct ping_info {
 
 struct timespec start_ts, end_ts;
 
+static void show_usage(char *cmd)
+{
+	fprintf(stderr,
+		"Usage: %s args\n"
+		"\t-h: show this usage\n"
+		"\t-m <mode: 0=ping 1=pong>\n"
+		"\t-s <source IP address>\n"
+		"\t-d <destination IP address>\n"
+		"\t-S <source MAC address>\n"
+		"\t-D <destination MAC address>\n"
+		"\t-n <# of packets>\n"
+		"\t-l <packet length in byte>\n"
+		"\t-i <ping interval in second>\n"
+		"\t-c <ICMP checksum: 0=disabled 1=enabled>\n"
+		"\t-f <sync flag: 0=non-block, 1=block, 2=busy-wait>\n"
+		"\t-p: if specified, pci direct access w/o ioctl\n",
+		cmd);
+}
+
 /* wrapsum & checksum are taken from pkt-gen.c in netmap */
 static uint16_t wrapsum(uint32_t sum)
 {
@@ -236,8 +255,14 @@ int main(int argc, char *argv[])
 	int opt;
 	DEFINE_LBUFNET_CONF(conf);
 
-	while ((opt = getopt(argc, argv, "s:d:S:D:n:f:m:i:l:pc:")) != -1) {
+	while ((opt = getopt(argc, argv, "hm:s:d:S:D:n:l:i:c:f:p")) != -1) {
 		switch(opt) {
+		case 'h':
+			show_usage(argv[0]);
+			return -1;
+		case 'm':
+			pinfo.mode = atoi(optarg);
+			break;
 		case 's':
 			pinfo.src_ip = optarg;
 			break;
@@ -253,12 +278,6 @@ int main(int argc, char *argv[])
 		case 'n':
 			pinfo.count = atol(optarg);
 			break;
-		case 'm':
-			pinfo.mode = atoi(optarg);
-			break;
-		case 'i':
-			pinfo.interval_us = (uint32_t)(atof(optarg) * 1000000);
-			break;
 		case 'l':
 			pinfo.datalen = atoi(optarg);
 			if (pinfo.datalen > MAX_PAYLOAD_SIZE) {
@@ -266,14 +285,17 @@ int main(int argc, char *argv[])
 				return -1;
 			}
 			break;
+		case 'i':
+			pinfo.interval_us = (uint32_t)(atof(optarg) * 1000000);
+			break;
+		case 'c':
+			pinfo.checksum = atoi(optarg);
+			break;
 		case 'f':
 			pinfo.sync_flags = atoi(optarg);
 			break;
 		case 'p':
 			conf.pci_direct_access = 1;
-			break;
-		case 'c':
-			pinfo.checksum = atoi(optarg);
 			break;
 		}
 	}
@@ -282,12 +304,25 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "Error: failed to initialize lbufnet\n");
 		return -1;
 	}
+
+	printf("lbuf_ping: mode=%s w/ checksum %s\n",
+		pinfo.mode == MODE_PING ? "PING" : "PONG",
+		pinfo.checksum ? "enabled" : "disabled");
+	if (pinfo.mode == MODE_PING)
+		printf("\tsrc=%s(%s) -> dst=%s(%s)\n",
+			pinfo.src_ip, pinfo.src_mac, pinfo.dst_ip, pinfo.dst_mac);
+	printf("\tlbufnet: sync_flags=%d(%s) pci_access=%s\n",
+		pinfo.sync_flags, lbufnet_sync_flag_names[pinfo.sync_flags],
+		conf.pci_direct_access ? "direct" : "ioctl");
+
 	lbufnet_register_input_callback(input_handler);
 	if (pinfo.mode == MODE_PING) {
 		uint16_t sequence;
 		struct lbufnet_tx_packet tx_pkt;
 
 		if (!pinfo.src_ip || !pinfo.src_mac || !pinfo.dst_ip || !pinfo.dst_mac) {
+			show_usage(argv[0]);
+			lbufnet_exit();
 			fprintf(stderr, "ping mode requires src and dst ip/mac addresses\n");
 			return -1;
 		}
