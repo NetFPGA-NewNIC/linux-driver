@@ -169,6 +169,11 @@ static void lbufnet_finish(int sig)
 	exit(0);
 }
 
+static inline int addr_in_lbuf(unsigned int idx, uint64_t gc_addr)
+{
+	return gc_addr > ld->tx_dma_addr[idx] && gc_addr <= ld->tx_dma_addr[idx] + tx_lbuf_size;
+}
+
 int lbufnet_init(struct lbufnet_conf *conf)
 {
 	unsigned int i;
@@ -189,6 +194,8 @@ int lbufnet_init(struct lbufnet_conf *conf)
 			return -1;
 		}
 	}
+	tx_lbuf_count = conf->tx_lbuf_count;
+	tx_lbuf_size = conf->tx_lbuf_size;
 
 	/* initialization */
 	if ((fd = open(DEV_FNAME, O_RDWR, 0755)) < 0) {
@@ -212,7 +219,7 @@ int lbufnet_init(struct lbufnet_conf *conf)
 	dprintf("\ttx_idx=%u rx_idx=%u\n", ld->tx_idx, ld->rx_idx);
 	dprintf("\trx_cons=%u\n", ld->rx_cons);
 	dprintf("\ttx_dma_addr\n");
-	for (i = 0; i < conf->tx_lbuf_count; i++)
+	for (i = 0; i < tx_lbuf_count; i++)
 		dprintf("\t\t[%d]=%p\n", i, (void *)ld->tx_dma_addr[i]);
 	dprintf("\trx_dma_addr\n");
 	for (i = 0; i < NR_SLOT; i++)
@@ -230,6 +237,13 @@ int lbufnet_init(struct lbufnet_conf *conf)
 		dprintf("\tcompletion[%d]=%x\n", i, LBUF_TX_COMPLETION(tx_completion, i));
 	dprintf("\tgc_addr=%p\n", (void *)LBUF_GC_ADDR(tx_completion));
 	ld->last_gc_addr = (uint64_t)LBUF_GC_ADDR(tx_completion);
+	for (i = 0; i < tx_lbuf_count; i++) {
+		if (addr_in_lbuf(i, ld->last_gc_addr)) {
+			tx_prod = tx_cons = (i == tx_lbuf_count - 1) ? 0 : i + 1; 
+			break;
+		}
+	}
+	dprintf("\ttx_prod=%u tx_cons=%u\n", tx_prod, tx_cons);
 
 	/* 3rd mmap is for RX buffers reserved and used by kernel */
 	for (i = 0; i < NR_SLOT; i++) {
@@ -245,20 +259,17 @@ int lbufnet_init(struct lbufnet_conf *conf)
 	prev_nr_drops = lh.nr_drops;
 
 	/* 4th mmap is for TX buffers exclusively used by user (but allocated by kernel) */
-	if (conf->tx_lbuf_size) {
-		for (i = 0; i < conf->tx_lbuf_count; i++) {
-			tx_lbuf[i] = mmap(NULL, conf->tx_lbuf_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (tx_lbuf_size) {
+		for (i = 0; i < tx_lbuf_count; i++) {
+			tx_lbuf[i] = mmap(NULL, tx_lbuf_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 			if (tx_lbuf[i] == MAP_FAILED) {
 				perror("mmap");
 				return -1;
 			}
 			dprintf("TX lbuf[%d] is mmaped to vaddr=%p w/ size=%u (dma_addr=%p)\n",
-					i, tx_lbuf[i], conf->tx_lbuf_size, (void *)ld->tx_dma_addr[i]);
+					i, tx_lbuf[i], tx_lbuf_size, (void *)ld->tx_dma_addr[i]);
 		}
 	}
-	tx_lbuf_count = conf->tx_lbuf_count;
-	tx_lbuf_size = conf->tx_lbuf_size;
-
 	/* set xmit_packet handler based on pci_direct_access config */
 	if (conf->pci_direct_access) {
 		char *fn = get_pci_filename();
@@ -300,8 +311,7 @@ static void clean_tx(void)
 	if (gc_addr == ld->last_gc_addr)
 		return;
 	do {
-		last = gc_addr > ld->tx_dma_addr[tx_cons] &&
-		       gc_addr <= ld->tx_dma_addr[tx_cons] + tx_lbuf_size;
+		last = addr_in_lbuf(tx_cons, gc_addr);
 		dprintf("%s: tx_cons=%d tx_prod=%d by gc_addr %p (last=%d)\n",
 		      __func__, tx_cons, tx_prod, (void *)gc_addr, last);
 		inc_tx_pointer(tx_cons);
@@ -314,9 +324,11 @@ int lbufnet_exit(void)
 	if (!initialized)
 		return -1;
 
+	dprintf("start tx purging: empty=%d last_gc=%llx\n", tx_empty(), ld->last_gc_addr);
 	/* waiting for draining all transmitted packets */
 	while(!tx_empty())
 		clean_tx();
+	dprintf("stop tx purging\n");
 
 	if (ioctl(fd, NF10_IOCTL_CMD_EXIT)) {
 		perror("ioctl init");
