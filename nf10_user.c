@@ -332,13 +332,15 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	case NF10_IOCTL_CMD_PREPARE_RX:
 		/* arg conveys slot index of rx lbuf */
 		if (!adapter->user_ops->prepare_rx_buffer)
-			return -EINVAL;
+			return -ENOTSUPP;
 		netif_dbg(adapter, drv, default_netdev(adapter),
 			  "user-driven lbuf preparation: i=%lu\n", arg);
 		adapter->user_ops->prepare_rx_buffer(adapter, arg);
 		break;
 	case NF10_IOCTL_CMD_XMIT:
 	{
+		if (!adapter->user_ops->start_xmit)
+			return -ENOTSUPP;
 		/* arg conveys reference (index) and size of user tx lbuf */
 		ret = adapter->user_ops->start_xmit(adapter, arg);
 		break;
