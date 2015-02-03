@@ -422,9 +422,8 @@ wait_rx:
 	do {
 		dword_idx = ld->rx_cons;
 		buf_addr = rx_lbuf[ld->rx_idx];
-		pkt.port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
 		pkt.len = LBUF_RX_PKT_LEN(buf_addr, dword_idx);
-		pkt.timestamp = LBUF_RX_TIMESTAMP(buf_addr, dword_idx);
+		pkt.port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
 
 		if (unlikely(pkt.len == 0)) {
 			/* if this lbuf is closed, move to next lbuf */
@@ -447,6 +446,9 @@ wait_rx:
 wait_to_end_recv:
 		next_pkt_len = LBUF_RX_PKT_LEN(buf_addr, next_dword_idx);
 		if (next_pkt_len > 0) {
+			/* timestamp is written after packet length, so this is the safe point
+			 * to fetch valid timestamp when ensuring the current packet is received. */
+			pkt.timestamp = LBUF_RX_TIMESTAMP(buf_addr, dword_idx);
 			deliver_packet(&pkt, &rx_packets);
 			ld->rx_cons = next_dword_idx;
 		}
@@ -456,6 +458,7 @@ wait_to_end_recv:
 				lbufnet_stat.nr_polls++;
 				goto wait_to_end_recv;
 			}
+			pkt.timestamp = LBUF_RX_TIMESTAMP(buf_addr, dword_idx);
 			deliver_packet(&pkt, &rx_packets);
 			if (unlikely(LBUF_RX_CLOSED(next_dword_idx, lh))) {
 				move_to_next_lbuf(buf_addr);
