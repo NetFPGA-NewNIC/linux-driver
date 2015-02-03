@@ -319,10 +319,8 @@ static long nf10_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 				return -EFAULT;
 		}
 		adapter->nr_user_mmap = 0;
-		adapter->user_flags &= ~UF_ON_MASK;
 		/* IRQ is re-enabled with user gc address synced */
-		adapter->user_flags &= ~UF_IRQ_DISABLED;
-		adapter->user_flags |= UF_GC_ADDR_SYNC;
+		adapter->user_flags = UF_GC_ADDR_SYNC;
 		nf10_enable_irq(adapter);
 		netif_dbg(adapter, drv, default_netdev(adapter),
 			  "user exit: flags=%x ret=%lu\n",
