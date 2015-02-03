@@ -532,7 +532,7 @@ int lbufnet_write(struct lbufnet_tx_packet *pkt)
 {
 	void *data = pkt->data;
 	unsigned int len = pkt->len;
-	unsigned int port_num = pkt->port_num;
+	int port_num = pkt->port_num;
 	int sync_flags = pkt->sync_flags;
 	void *buf_addr;
 	struct pollfd pfd = { .fd = fd, .events = POLLOUT };

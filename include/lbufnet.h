@@ -78,14 +78,14 @@ char *lbufnet_sync_flag_names[] = {
 struct lbufnet_tx_packet {
 	void *data;
 	unsigned int len;
-	unsigned int port_num;
+	int port_num;
 	int sync_flags;
 };
 
 struct lbufnet_rx_packet {
 	void *data;
 	unsigned int len;
-	unsigned int port_num;
+	int port_num;
 	unsigned long long timestamp;
 };
 
