@@ -834,8 +834,8 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 		buf_addr = cur_rx_desc()->kern_addr;
 		/* rx cons pointer is maintained in dword unit */
 		dword_idx = get_rx_cons();
-		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
 		pkt_len = LBUF_RX_PKT_LEN(buf_addr, dword_idx);
+		port_num = LBUF_PKT_PORT_NUM(buf_addr, dword_idx);
 
 		/* if the current packet length is zero, two cases are possible:
 		 * 1) no more packet has arrived
