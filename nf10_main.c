@@ -75,6 +75,8 @@ module_param(reset, bool, 0644);
 MODULE_PARM_DESC(reset, "PCIe reset");
 #endif
 
+#define NF10_NAPI_BUDGET	64
+
 /* DMA engine-dependent functions */
 enum {
 	DMA_LARGE_BUFFER = 0,
@@ -130,11 +132,6 @@ static int nf10_init_buffers(struct nf10_adapter *adapter)
 static void nf10_free_buffers(struct nf10_adapter *adapter)
 {
 	adapter->hw_ops->free_buffers(adapter);
-}
-
-static int nf10_napi_budget(struct nf10_adapter *adapter)
-{
-	return adapter->hw_ops->get_napi_budget();
 }
 
 void nf10_process_rx_irq(struct nf10_adapter *adapter, int *work_done, int budget)
@@ -202,7 +199,7 @@ static int nf10_up(struct net_device *netdev)
 		buffer_initialized = true;
 		nf10_enable_irq(adapter);
 		netif_napi_add(netdev, &adapter->napi, nf10_poll,
-			       nf10_napi_budget(adapter));
+				NF10_NAPI_BUDGET);
 		napi_enable(&adapter->napi);
 	}
 

@@ -729,16 +729,6 @@ static void nf10_lbuf_free_buffers(struct nf10_adapter *adapter)
 }
 
 /**
- * nf10_lbuf_napi_budget - [hw_ops] return NAPI budget
- *
- * This function is called before NAPI initialization to inform NAPI of budget.
- **/
-static int nf10_lbuf_napi_budget(void)
-{
-	return 64;
-}
-
-/**
  * move_to_next_lbuf - re-prepare current lbuf and switch to next lbuf
  * @adapter: associated adapter structure
  *
@@ -1249,7 +1239,6 @@ static struct nf10_hw_ops lbuf_hw_ops = {
 	.free			= nf10_lbuf_free,
 	.init_buffers		= nf10_lbuf_init_buffers,
 	.free_buffers		= nf10_lbuf_free_buffers,
-	.get_napi_budget	= nf10_lbuf_napi_budget,
 	.process_rx_irq		= nf10_lbuf_process_rx_irq,
 	.start_xmit		= nf10_lbuf_start_xmit,
 	.clean_tx_irq		= nf10_lbuf_clean_tx_irq,
