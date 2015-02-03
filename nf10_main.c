@@ -193,7 +193,7 @@ static int nf10_up(struct net_device *netdev)
 	if (buffer_initialized == false) {
 		if ((err = nf10_init_buffers(adapter))) {
 			netif_err(adapter, ifup, netdev,
-				  "failed to initialize packet buffers: err=%d\n", err);
+				  "failed to init buffers: err=%d\n", err);
 			return err;
 		}
 		buffer_initialized = true;
