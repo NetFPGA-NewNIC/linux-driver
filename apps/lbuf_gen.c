@@ -131,7 +131,6 @@ int main(int argc, char *argv[])
 	for (sent = 0; sent < count; sent++)
 		lbufnet_output(&pkt);
 	lbufnet_exit();
-	show_stat(NULL);
 
 	return 0;
 }

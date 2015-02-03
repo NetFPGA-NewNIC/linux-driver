@@ -257,6 +257,8 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "Error: failed to initialize lbufnet\n");
 		return -1;
 	}
+	lbufnet_register_exit_callback(show_stat);
+
 	printf("Packet transmission from src=%s:%u(%s) to dst=%s:%u(%s)\n",
 		pinfo.src_ip, UDPDEFPORT, pinfo.src_mac,
 		pinfo.dst_ip, UDPDEFPORT, pinfo.dst_mac);
@@ -280,7 +282,6 @@ int main(int argc, char *argv[])
 	}
 	lbufnet_flush(pkt.sync_flags);
 	lbufnet_exit();
-	show_stat(NULL);
 
 	return 0;
 }

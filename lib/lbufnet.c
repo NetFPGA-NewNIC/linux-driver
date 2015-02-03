@@ -188,6 +188,11 @@ int lbufnet_exit(void)
 		clean_tx();
 	dprintf("tx purging done\n");
 
+	if (exit_cb) {
+		lbufnet_stat.nr_drops = lh.nr_drops - prev_nr_drops;
+		exit_cb(&lbufnet_stat);
+	}
+
 	if (pci_base_addr)
 		munmap(pci_base_addr, PAGE_SIZE);
 	if (tx_lbuf_size)
@@ -215,11 +220,8 @@ int lbufnet_exit(void)
 static void lbufnet_finish(int sig)
 {
 	(void)sig;
+	dprintf("signal is caught by lbufnet handler\n");
 	lbufnet_exit();
-	if (exit_cb) {
-		lbufnet_stat.nr_drops = lh.nr_drops - prev_nr_drops;
-		exit_cb(&lbufnet_stat);
-	}
 	exit(0);
 }
 
