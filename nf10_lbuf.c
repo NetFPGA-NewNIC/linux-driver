@@ -851,14 +851,18 @@ static void nf10_lbuf_process_rx_irq(struct nf10_adapter *adapter,
 				  "Error: invalid packet "
 				  "(port_num=%d, len=%u at rx_idx=%d lbuf[%u])",
 				  port_num, pkt_len, rx_idx(), dword_idx);
-			/* For DMA hardware debugging, some contents of previous and
-			 * next packets are dumped */
-			printk("-prev packet --------------------------------\n");
-			print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_NONE, 16, 1,
-				       (u32 *)buf_addr + (dword_idx - 18), 72, true);
-			printk("-this packet --------------------------------\n");
-			print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_NONE, 16, 1,
-				       (u32 *)buf_addr + dword_idx, 72, true);
+			/* For DMA hardware debugging, some contents of previous
+			 * and next packets are dumped */
+			print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_NONE, 16,1,
+				(u32 *)buf_addr + (dword_idx - 32), 128, true);
+			printk("-this packet ------------------------------\n");
+			print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_NONE, 16,1,
+				(u32 *)buf_addr + dword_idx, 128, true);
+			/* XXX: user_flags is not meant for it, but in this
+			 * exceptional case (RX hang), we disable IRQ for good
+			 * not to indefinitely generate IRQ and this report.
+			 * Anyway, this is unrecoverable situation */
+			adapter->user_flags |= UF_IRQ_DISABLED;
 			break;
 		}
 		/* Now, pkt_len > 0,
