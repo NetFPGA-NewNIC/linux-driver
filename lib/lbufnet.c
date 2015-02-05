@@ -416,7 +416,7 @@ int lbufnet_input(unsigned long nr_packets, int sync_flags)
 wait_rx:
 	if (sync_flags == SF_BLOCK) {
 		do {
-			n = poll(&pfd, 1, 1000);
+			n = poll(&pfd, 1, -1);
 			dprintf("Waiting for RX packets (n=%d, revents=%x)\n", n, pfd.revents);
 		} while (n <= 0 || pfd.revents & POLLERR || !(pfd.revents & POLLIN));
 	}
@@ -518,7 +518,7 @@ int lbufnet_flush(int sync_flags)
 		if (unlikely(sync_flags != SF_BLOCK))
 			return -1;
 		do {
-			n = poll(&pfd, 1, 1000);
+			n = poll(&pfd, 1, -1);
 		} while (n <= 0 || pfd.revents & POLLERR);
 		clean_tx();
 	}
@@ -558,7 +558,7 @@ avail_check:
 			if (sync_flags != SF_BLOCK)
 				return -1;
 			do {
-				n = poll(&pfd, 1, 1000);
+				n = poll(&pfd, 1, -1);
 			} while (n <= 0 || pfd.revents & POLLERR);
 		}
 	}
