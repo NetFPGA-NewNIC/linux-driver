@@ -135,6 +135,10 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 	unsigned int mask = 0;
 	unsigned long events = wait ? wait->pt_key : POLLIN | POLLOUT | POLLERR;
 
+	/* XXX: do we need to immediately return if wait is NULL?
+	 * in old kernel versions, NULL wait is passed when timeout expires,
+	 * but right after following it, a valid wait is passed */
+
 	spin_lock_bh(&user_lock);
 	/* UF_[RX|TX]_PENDING is set by nf10_user_callback from NAPI poll
 	 * handler with IRQ being disabled */
