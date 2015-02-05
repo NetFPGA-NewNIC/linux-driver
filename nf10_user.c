@@ -133,11 +133,12 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 {
 	struct nf10_adapter *adapter = f->private_data;
 	unsigned int mask = 0;
+	unsigned long events = wait ? wait->pt_key : POLLIN | POLLOUT | POLLERR;
 
 	spin_lock_bh(&user_lock);
 	/* UF_[RX|TX]_PENDING is set by nf10_user_callback from NAPI poll
 	 * handler with IRQ being disabled */
-	if (wait->pt_key & (POLLIN | POLLRDNORM)) {
+	if (events & (POLLIN | POLLRDNORM)) {
 		/* poll requested for rx */
 		poll_wait(f, &adapter->user_rx_wq, wait);
 		if (adapter->user_flags & UF_RX_PENDING) {
@@ -145,7 +146,7 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 			mask |= (POLLIN | POLLRDNORM);
 		}
 	}
-	if (wait->pt_key & (POLLOUT | POLLWRNORM)) {
+	if (events & (POLLOUT | POLLWRNORM)) {
 		/* poll requested for tx */
 		poll_wait(f, &adapter->user_tx_wq, wait);
 		if (adapter->user_flags & UF_TX_PENDING) {
@@ -157,11 +158,10 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 	 * so if irq is disabled, enable again before sleeping */
 	if (!mask && (adapter->user_flags & UF_IRQ_DISABLED)) {
 		netif_dbg(adapter, intr, default_netdev(adapter),
-			  "enable irq before sleeping (key=%lx)\n",
-			  wait ? wait->pt_key : -1);
+			  "enable irq before sleeping (events=%lx)\n", events);
 		/* if poll is requested for tx, it waits for tx buffer
 		 * availability, so needs to sync user gc address */
-		if (wait->pt_key & (POLLOUT | POLLWRNORM))
+		if (events & (POLLOUT | POLLWRNORM))
 			adapter->user_flags |= UF_GC_ADDR_SYNC;
 		adapter->user_flags &= ~UF_IRQ_DISABLED;
 		nf10_enable_irq(adapter);
@@ -169,8 +169,8 @@ static unsigned int nf10_poll(struct file *f, poll_table *wait)
 	spin_unlock_bh(&user_lock);
 
 	netif_dbg(adapter, intr, default_netdev(adapter),
-		  "nf10_poll key=%lx mask=%x flags=%x\n",
-		  wait ? wait->pt_key : -1, mask, adapter->user_flags);
+		  "nf10_poll events=%lx mask=%x flags=%x\n",
+		  events, mask, adapter->user_flags);
 	return mask;
 }
 
