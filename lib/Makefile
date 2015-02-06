@@ -39,7 +39,7 @@
 root_dir	:= ../
 DRIVER_DIR	:= $(realpath $(root_dir))
 INCDIR		:= $(DRIVER_DIR)/include
-LIBDIR		:= /usr/local/lib
+LIBDIR		:= /usr/lib
 DRIVER_HEADERS	:= nf10_lbuf_api.h nf10_user.h
 LBUFNET_LIB	:= liblbufnet.so
 LBUFNET_LIB_VER	:= 0
@@ -83,7 +83,7 @@ install: $(LBUFNET_LIB)
 	install -m 0644 $(LBUFNET_LIB) $(LIBDIR)/$(LBUFNET_LIB).$(LBUFNET_LIB_VER)
 	ln -f -s $(LIBDIR)/$(LBUFNET_LIB).$(LBUFNET_LIB_VER) $(LIBDIR)/$(LBUFNET_LIB)
 	ldconfig
-	cp $(INCDIR)/* /usr/local/include/
+	cp $(INCDIR)/* /usr/include/
 
 clean:
 	rm -f $(LBUFNET_LIB) $(LBUFNET_OBJ) $(DRIVER_HEADERS)
