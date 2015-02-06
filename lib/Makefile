@@ -36,31 +36,54 @@
 #
 #
 
-PROGRAMS	:= lbuf_tx lbuf_rx lbuf_ping lbuf_gen
-INSTALLDIR	:= /usr/local/bin
-LDFLAGS		:= -L../lib -llbufnet
+root_dir	:= ../
+DRIVER_DIR	:= $(realpath $(root_dir))
+INCDIR		:= $(DRIVER_DIR)/include
+LIBDIR		:= /usr/lib
+DRIVER_HEADERS	:= nf10_lbuf_api.h nf10_user.h
+LBUFNET_LIB	:= liblbufnet.so
+LBUFNET_LIB_VER	:= 0
+LBUFNET_OBJ	:= lbufnet.o
+
+ifeq ($(NAAS),y)
+	CONFIG_NR_PORTS := 1
+	CONFIG_NO_TIMESTAMP := y
+endif
+
+ifeq ($(CONFIG_NR_PORTS),)
+	CONFIG_NR_PORTS := 4
+endif
+CFLAGS += -DCONFIG_NR_PORTS=$(CONFIG_NR_PORTS)
+ifeq ($(CONFIG_NO_TIMESTAMP),y)
+CFLAGS += -DCONFIG_NO_TIMESTAMP
+endif
 
 ifeq ($(DEBUG),y)
 CFLAGS += -g -DDEBUG
 endif
 
-CFLAGS += -O2 -Wall -I../include -Wextra -Werror -Wunreachable-code
+CFLAGS += -O2 -fPIC -I $(INCDIR) -Wall -Wextra -Werror -Wunreachable-code
 
-all: $(PROGRAMS)
+all: $(LBUFNET_LIB)
 
-.PHONY: clean
+.PHONY: clean install
 
-lbuf_tx: lbuf_tx.c
-	$(CC) $(CFLAGS) -o $@ lbuf_tx.c $(LDFLAGS)
-lbuf_rx: lbuf_rx.c
-	$(CC) $(CFLAGS) -o $@ lbuf_rx.c $(LDFLAGS)
-lbuf_ping: lbuf_ping.c
-	$(CC) $(CFLAGS) -o $@ lbuf_ping.c $(LDFLAGS) -lrt
-lbuf_gen: lbuf_gen.c
-	$(CC) $(CFLAGS) -o $@ lbuf_gen.c $(LDFLAGS)
+nf10_lbuf_api.h:
+	ln -sf $(DRIVER_DIR)/$@
 
-install: $(PROGRAMS)
-	install -m 0755 $(PROGRAMS) $(INSTALLDIR)
+nf10_user.h:
+	ln -sf $(DRIVER_DIR)/$@
+
+lbufnet.o: $(DRIVER_HEADERS)
+
+$(LBUFNET_LIB): $(DRIVER_HEADERS) $(LBUFNET_OBJ)
+	$(CC) $(CFLAGS) -shared -o $@ $(LBUFNET_OBJ)
+
+install: $(LBUFNET_LIB)
+	install -m 0644 $(LBUFNET_LIB) $(LIBDIR)/$(LBUFNET_LIB).$(LBUFNET_LIB_VER)
+	ln -f -s $(LIBDIR)/$(LBUFNET_LIB).$(LBUFNET_LIB_VER) $(LIBDIR)/$(LBUFNET_LIB)
+	ldconfig
+	cp $(INCDIR)/* /usr/include/
 
 clean:
-	rm -f $(PROGRAMS)
+	rm -f $(LBUFNET_LIB) $(LBUFNET_OBJ) $(DRIVER_HEADERS)

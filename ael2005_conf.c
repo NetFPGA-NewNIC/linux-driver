@@ -29,7 +29,7 @@ int configure_ael2005_phy_chips(struct nf10_adapter *adapter)
 	int size, i;
 	int timeout = 0;
 
-	pr_info("Myd: AEL2005 Initialization Start...\n");
+	pr_info("PHY: AEL2005 Initialization Start...\n");
 
 	/* We only need interface 3 in this project
          * don't forget that the nearest port to PCIe is hardwired to 0x2 */
@@ -145,7 +145,7 @@ int configure_ael2005_phy_chips(struct nf10_adapter *adapter)
 			} while (!atomic_read(&adapter->mdio_access_rdy));
 		}
 	}
-	pr_info("Myd: AEL2005 Initialization Finished...\n");
+	pr_info("PHY: AEL2005 Initialization Finished...\n");
 
 	return 0;
 }

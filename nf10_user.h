@@ -49,19 +49,43 @@
 #define NF10_IOCTL_CMD_READ_STAT	(SIOCDEVPRIVATE+0)
 #define NF10_IOCTL_CMD_WRITE_REG	(SIOCDEVPRIVATE+1)
 #define NF10_IOCTL_CMD_READ_REG		(SIOCDEVPRIVATE+2)
-#define NF10_IOCTL_CMD_INIT		(SIOCDEVPRIVATE+3)
-#define NF10_IOCTL_CMD_PREPARE_RX	(SIOCDEVPRIVATE+4)
-#define NF10_IOCTL_CMD_WAIT_INTR	(SIOCDEVPRIVATE+5)
 #ifdef CONFIG_OSNT
 /* for compat w/ OSNT python apps */
 #define NF10_IOCTL_CMD_WRITE_REG_PY	(SIOCDEVPRIVATE+9)
 #endif
 
+/*
+ * Packet processing
+ */
+#define NF10_IOCTL_CMD_INIT		(SIOCDEVPRIVATE+3)
+#define NF10_IOCTL_CMD_EXIT		(SIOCDEVPRIVATE+4)
+/* Rx */
+#define NF10_IOCTL_CMD_PREPARE_RX	(SIOCDEVPRIVATE+5)
+/* Tx */
+#define NF10_IOCTL_CMD_XMIT		(SIOCDEVPRIVATE+20)
+
+#define XMIT_SHIFT			28
+#define XMIT_MASK			((1 << XMIT_SHIFT) - 1)
+#define NF10_IOCTL_ARG_XMIT(ref, len)	((ref << XMIT_SHIFT) | (len & XMIT_MASK))
+
+/* user_flags (for user and kernel) */
+#define UF_RX_ON	0x01
+#define UF_TX_ON	0x02
+#define UF_ON_MASK	(UF_RX_ON | UF_TX_ON)
+
 #ifdef __KERNEL__
 #include "nf10.h"
+#define XMIT_LEN(arg)			(arg & XMIT_MASK)
+#define XMIT_REF(arg)			(arg >> XMIT_SHIFT)
+
+/* user_flags (for kernel only) */
+#define UF_RX_PENDING	0x04
+#define UF_TX_PENDING	0x08
+#define UF_IRQ_DISABLED	0x10
+#define UF_GC_ADDR_SYNC	0x20
+
 extern int nf10_init_fops(struct nf10_adapter *adapter);
 extern int nf10_remove_fops(struct nf10_adapter *adapter);
-extern bool nf10_user_rx_callback(struct nf10_adapter *adapter);
+extern bool nf10_user_callback(struct nf10_adapter *adapter, int rx);
 #endif
-
 #endif
