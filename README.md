@@ -33,7 +33,8 @@ To install the compiled drivers,
 ```
 # make install
 ```
-But, installation is not usually required.
+The user driver, `liblbufnet.so`, should be installed when using the sample applications in `apps/`.
+If the kernel driver is installed, it is located in `/lib/modules/<kernel version>/extra/nf10/` and automatically loaded at booting once the board is probed.
 
 #### 2. Applications
 A number of applications that use the user-level driver are provided in `apps/` directory.
@@ -49,6 +50,8 @@ Usage
 To load the kernel driver,
 ```
 # insmod nf10.ko
+or
+# modprobe nf10		# if installed
 ```
 Since Linux kernel 3.12, PCI bus reset is supported, so you can safely unload/reload the driver.
 
